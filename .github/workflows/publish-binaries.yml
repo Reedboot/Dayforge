@@ -117,185 +117,57 @@ jobs:
           flutter build windows --release --build-name $version --build-number $env:GITHUB_RUN_NUMBER
 
           $releaseDir = Resolve-Path "build/windows/x64/runner/Release"
-          $stagingDir = Join-Path $env:RUNNER_TEMP "dayforge-windows-installer"
-          $installerDir = Join-Path $stagingDir "installer"
-          New-Item -ItemType Directory -Force -Path $installerDir | Out-Null
 
-          $payloadZip = Join-Path $installerDir "payload.zip"
-          Compress-Archive -Path (Join-Path $releaseDir.Path "*") `
-            -DestinationPath $payloadZip -Force
+          $installCmd = @'
+@echo off
+setlocal
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Dayforge.ps1"
+'@
+          Set-Content -Path (Join-Path $releaseDir.Path "Install-Dayforge.cmd") `
+            -Value $installCmd -NoNewline -Encoding Ascii
 
-          $installerProject = @"
-<Project Sdk=""Microsoft.NET.Sdk"">
-  <PropertyGroup>
-    <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <AssemblyName>Dayforge-setup</AssemblyName>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
-    <SelfContained>true</SelfContained>
-    <PublishSingleFile>true</PublishSingleFile>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-  </PropertyGroup>
-</Project>
-"@
-          Set-Content -Path (Join-Path $installerDir "DayforgeInstaller.csproj") `
-            -Value $installerProject -Encoding Ascii
-
-          $installerSource = @"
-using Microsoft.Win32;
-using System.Diagnostics;
-using System.IO.Compression;
-using System.Runtime.InteropServices;
-
-internal static class Program
-{
-    private const string AppName = "Dayforge";
-    private const string Publisher = "Reedboot";
-    private const string AppExecutable = "dayforge.exe";
-    private const string ShortcutName = "Dayforge.lnk";
-
-    public static int Main()
-    {
-        try
-        {
-            var installRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs",
-                AppName);
-            var programsDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
-                "Programs");
-            var shortcutPath = Path.Combine(programsDir, ShortcutName);
-            var uninstallScriptPath = Path.Combine(installRoot, "Uninstall-Dayforge.ps1");
-            var payloadPath = Path.Combine(AppContext.BaseDirectory, "payload.zip");
-
-            if (!File.Exists(payloadPath))
-            {
-                throw new FileNotFoundException("Missing payload.zip next to the installer.", payloadPath);
-            }
-
-            StopRunningProcesses();
-            if (Directory.Exists(installRoot))
-            {
-                Directory.Delete(installRoot, recursive: true);
-            }
-
-            Directory.CreateDirectory(installRoot);
-            ZipFile.ExtractToDirectory(payloadPath, installRoot, overwriteFiles: true);
-            Directory.CreateDirectory(programsDir);
-            CreateShortcut(shortcutPath, Path.Combine(installRoot, AppExecutable), installRoot);
-            WriteUninstallScript(uninstallScriptPath, shortcutPath, installRoot);
-            RegisterUninstallEntry(installRoot, uninstallScriptPath);
-
-            Console.WriteLine($"Installed {AppName} to {installRoot}");
-            return 0;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine(ex);
-            return 1;
-        }
-    }
-
-    private static void StopRunningProcesses()
-    {
-        foreach (var process in Process.GetProcessesByName("dayforge"))
-        {
-            try
-            {
-                if (!process.CloseMainWindow())
-                {
-                    process.Kill(entireProcessTree: true);
-                    continue;
-                }
-
-                if (!process.WaitForExit(5000))
-                {
-                    process.Kill(entireProcessTree: true);
-                    process.WaitForExit(5000);
-                }
-            }
-            catch
-            {
-                // Ignore best-effort shutdown failures and let the install fail
-                // later if files are still locked.
-            }
-        }
-    }
-
-    private static void CreateShortcut(string shortcutPath, string targetPath, string workingDirectory)
-    {
-        var shellType = Type.GetTypeFromProgID("WScript.Shell")
-            ?? throw new InvalidOperationException("WScript.Shell is unavailable.");
-        dynamic shell = Activator.CreateInstance(shellType)
-            ?? throw new InvalidOperationException("Could not create WScript.Shell.");
-        dynamic shortcut = shell.CreateShortcut(shortcutPath);
-        shortcut.TargetPath = targetPath;
-        shortcut.WorkingDirectory = workingDirectory;
-        shortcut.IconLocation = targetPath + ",0";
-        shortcut.Description = AppName;
-        shortcut.Save();
-    }
-
-    private static void WriteUninstallScript(string uninstallScriptPath, string shortcutPath, string installRoot)
-    {
-        var uninstallKeyPath = @"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dayforge";
-        var uninstallScript = $$"""
-param()
+          $installScript = @'
 $ErrorActionPreference = 'Stop'
-$shortcutPath = '{{shortcutPath}}'
-$installRoot = '{{installRoot}}'
-$uninstallKeyPath = '{{uninstallKeyPath}}'
 
-if (Test-Path $shortcutPath) {
-    Remove-Item $shortcutPath -Force
+$sourceRoot = $PSScriptRoot
+$targetRoot = Join-Path $env:LOCALAPPDATA 'Programs\Dayforge'
+$programsDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$shortcutPath = Join-Path $programsDir 'Dayforge.lnk'
+$appExecutable = Join-Path $targetRoot 'dayforge.exe'
+
+if (Test-Path $targetRoot) {
+  Remove-Item $targetRoot -Recurse -Force
 }
 
-if (Test-Path $uninstallKeyPath) {
-    Remove-Item $uninstallKeyPath -Recurse -Force
+New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
+Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | ForEach-Object {
+  $relativePath = $_.FullName.Substring($sourceRoot.Length).TrimStart('\')
+  $destinationPath = Join-Path $targetRoot $relativePath
+  New-Item -ItemType Directory -Force -Path (Split-Path $destinationPath) | Out-Null
+  Copy-Item -LiteralPath $_.FullName -Destination $destinationPath -Force
+  Unblock-File -LiteralPath $destinationPath -ErrorAction SilentlyContinue
 }
 
-if (Test-Path $installRoot) {
-    Remove-Item $installRoot -Recurse -Force
-}
-""";
+New-Item -ItemType Directory -Force -Path $programsDir | Out-Null
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($shortcutPath)
+$shortcut.TargetPath = $appExecutable
+$shortcut.WorkingDirectory = $targetRoot
+$shortcut.IconLocation = "$appExecutable,0"
+$shortcut.Description = 'Dayforge'
+$shortcut.Save()
 
-        File.WriteAllText(uninstallScriptPath, uninstallScript);
-    }
+Start-Process -FilePath $appExecutable
+'@
+          Set-Content -Path (Join-Path $releaseDir.Path "Install-Dayforge.ps1") `
+            -Value $installScript -NoNewline -Encoding Ascii
 
-    private static void RegisterUninstallEntry(string installRoot, string uninstallScriptPath)
-    {
-        const string uninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Dayforge";
-        using var key = Registry.CurrentUser.CreateSubKey(uninstallKeyPath, writable: true)
-            ?? throw new InvalidOperationException("Could not create uninstall registry key.");
-
-        key.SetValue("DisplayName", AppName);
-        key.SetValue("DisplayVersion", "VERSION_PLACEHOLDER");
-        key.SetValue("Publisher", Publisher);
-        key.SetValue("InstallLocation", installRoot);
-        key.SetValue("DisplayIcon", Path.Combine(installRoot, AppExecutable));
-        key.SetValue(
-            "UninstallString",
-            $@"powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""{uninstallScriptPath}""");
-        key.SetValue("NoModify", 1, RegistryValueKind.DWord);
-        key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
-    }
-}
-"@
-          $installerSource = $installerSource.Replace("VERSION_PLACEHOLDER", $version)
-          Set-Content -Path (Join-Path $installerDir "Program.cs") -Value $installerSource -Encoding Ascii
-
-          $installerOutput = Join-Path $stagingDir "publish"
-          dotnet publish (Join-Path $installerDir "DayforgeInstaller.csproj") `
-            -c Release -r win-x64 -o $installerOutput
-          Copy-Item (Join-Path $installerOutput "Dayforge-setup.exe") `
-            (Join-Path $env:RUNNER_TEMP "Dayforge-windows-x64-setup.exe") -Force
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" `
+            -DestinationPath "Dayforge-windows-x64.zip" -Force
 
       - name: Upload Windows asset
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release upload $env:RELEASE_TAG "Dayforge-windows-x64-setup.exe" --clobber
+          gh release upload $env:RELEASE_TAG "Dayforge-windows-x64.zip" --clobber

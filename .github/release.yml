@@ -5,6 +5,6 @@ template: |
   may require uninstalling the previous build. Configure a stable private
   signing key before distributing updateable builds.
 
-  The Windows download is a per-user installer. Run the setup EXE to install
-  Dayforge under `%LOCALAPPDATA%\Programs\Dayforge` and create a Start Menu
-  shortcut.
+  The Windows download is a portable zip with `Install-Dayforge.cmd`. Run the
+  script after extracting the archive to install Dayforge under
+  `%LOCALAPPDATA%\Programs\Dayforge` and create a Start Menu shortcut.
