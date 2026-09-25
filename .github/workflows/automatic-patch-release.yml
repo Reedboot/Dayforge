@@ -77,10 +77,10 @@ jobs:
             patch=$((patch + 1))
             tag="v${major}.${minor}.${patch}"
             git tag "$tag" "$commit"
+            gh auth setup-git
 
             for attempt in 1 2 3 4 5; do
-              if git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
-                push origin "refs/tags/${tag}"; then
+              if git push origin "refs/tags/${tag}"; then
                 break
               fi
 
