@@ -76,10 +76,20 @@ jobs:
 
             patch=$((patch + 1))
             tag="v${major}.${minor}.${patch}"
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f "ref=refs/tags/${tag}" \
-              -f "sha=${commit}"
-            gh workflow run publish-binaries.yml --repo "$GITHUB_REPOSITORY" \
-              --ref main --field "tag=${tag}"
+            git tag "$tag" "$commit"
+
+            for attempt in 1 2 3 4 5; do
+              if git -c http.https://github.com/.extraheader="AUTHORIZATION: bearer ${GH_TOKEN}" \
+                push origin "refs/tags/${tag}"; then
+                break
+              fi
+
+              if [[ "$attempt" -eq 5 ]]; then
+                echo "Failed to push release tag ${tag}." >&2
+                exit 1
+              fi
+
+              sleep $((attempt * 10))
+            done
             echo "::notice title=Patch release tag created::${tag} points to ${commit}"
           done
