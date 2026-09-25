@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,12 +21,14 @@ jobs:
   build-linux-android:
     name: Build Linux and Android
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Fetch tagged source
         run: |
           git init
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "$GITHUB_SHA"
+          git fetch --depth=1 origin "refs/tags/${RELEASE_TAG}"
           git checkout --detach FETCH_HEAD
 
       - name: Install Flutter
@@ -43,7 +51,7 @@ jobs:
 
       - name: Build Linux and Android artifacts
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           flutter pub get
           flutter build linux --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
           flutter build apk --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
@@ -54,15 +62,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes='Preview binaries. The Android APK uses a temporary CI debug-signing key; later APKs cannot update it in place and may require uninstalling first. Configure a private release keystore before distributing updateable builds.'
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" \
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
               Dayforge-linux-x64.tar.gz Dayforge-android-preview.apk --clobber
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$RELEASE_TAG" \
               Dayforge-linux-x64.tar.gz Dayforge-android-preview.apk \
-              --title "Dayforge $GITHUB_REF_NAME" \
-              --notes "$notes" \
+              --title "Dayforge $RELEASE_TAG" \
+              --generate-notes \
               --prerelease
           fi
 
@@ -70,13 +77,15 @@ jobs:
     name: Build Windows
     needs: build-linux-android
     runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Fetch tagged source
         shell: pwsh
         run: |
           git init
           git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          git fetch --depth=1 origin $env:GITHUB_SHA
+          git fetch --depth=1 origin "refs/tags/$env:RELEASE_TAG"
           git checkout --detach FETCH_HEAD
 
       - name: Install Flutter
@@ -103,15 +112,190 @@ jobs:
       - name: Build Windows artifact
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $version = $env:RELEASE_TAG -replace '^v', ''
           flutter pub get
           flutter build windows --release --build-name $version --build-number $env:GITHUB_RUN_NUMBER
-          Compress-Archive -Path "build/windows/x64/runner/Release/*" `
-            -DestinationPath "Dayforge-windows-x64.zip" -Force
+
+          $releaseDir = Resolve-Path "build/windows/x64/runner/Release"
+          $stagingDir = Join-Path $env:RUNNER_TEMP "dayforge-windows-installer"
+          $installerDir = Join-Path $stagingDir "installer"
+          New-Item -ItemType Directory -Force -Path $installerDir | Out-Null
+
+          $payloadZip = Join-Path $installerDir "payload.zip"
+          Compress-Archive -Path (Join-Path $releaseDir.Path "*") `
+            -DestinationPath $payloadZip -Force
+
+          $installerProject = @"
+<Project Sdk=""Microsoft.NET.Sdk"">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>Dayforge-setup</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+</Project>
+"@
+          Set-Content -Path (Join-Path $installerDir "DayforgeInstaller.csproj") `
+            -Value $installerProject -Encoding Ascii
+
+          $installerSource = @"
+using Microsoft.Win32;
+using System.Diagnostics;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+
+internal static class Program
+{
+    private const string AppName = "Dayforge";
+    private const string Publisher = "Reedboot";
+    private const string AppExecutable = "dayforge.exe";
+    private const string ShortcutName = "Dayforge.lnk";
+
+    public static int Main()
+    {
+        try
+        {
+            var installRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs",
+                AppName);
+            var programsDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.StartMenu),
+                "Programs");
+            var shortcutPath = Path.Combine(programsDir, ShortcutName);
+            var uninstallScriptPath = Path.Combine(installRoot, "Uninstall-Dayforge.ps1");
+            var payloadPath = Path.Combine(AppContext.BaseDirectory, "payload.zip");
+
+            if (!File.Exists(payloadPath))
+            {
+                throw new FileNotFoundException("Missing payload.zip next to the installer.", payloadPath);
+            }
+
+            StopRunningProcesses();
+            if (Directory.Exists(installRoot))
+            {
+                Directory.Delete(installRoot, recursive: true);
+            }
+
+            Directory.CreateDirectory(installRoot);
+            ZipFile.ExtractToDirectory(payloadPath, installRoot, overwriteFiles: true);
+            Directory.CreateDirectory(programsDir);
+            CreateShortcut(shortcutPath, Path.Combine(installRoot, AppExecutable), installRoot);
+            WriteUninstallScript(uninstallScriptPath, shortcutPath, installRoot);
+            RegisterUninstallEntry(installRoot, uninstallScriptPath);
+
+            Console.WriteLine($"Installed {AppName} to {installRoot}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
+    }
+
+    private static void StopRunningProcesses()
+    {
+        foreach (var process in Process.GetProcessesByName("dayforge"))
+        {
+            try
+            {
+                if (!process.CloseMainWindow())
+                {
+                    process.Kill(entireProcessTree: true);
+                    continue;
+                }
+
+                if (!process.WaitForExit(5000))
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit(5000);
+                }
+            }
+            catch
+            {
+                // Ignore best-effort shutdown failures and let the install fail
+                // later if files are still locked.
+            }
+        }
+    }
+
+    private static void CreateShortcut(string shortcutPath, string targetPath, string workingDirectory)
+    {
+        var shellType = Type.GetTypeFromProgID("WScript.Shell")
+            ?? throw new InvalidOperationException("WScript.Shell is unavailable.");
+        dynamic shell = Activator.CreateInstance(shellType)
+            ?? throw new InvalidOperationException("Could not create WScript.Shell.");
+        dynamic shortcut = shell.CreateShortcut(shortcutPath);
+        shortcut.TargetPath = targetPath;
+        shortcut.WorkingDirectory = workingDirectory;
+        shortcut.IconLocation = targetPath + ",0";
+        shortcut.Description = AppName;
+        shortcut.Save();
+    }
+
+    private static void WriteUninstallScript(string uninstallScriptPath, string shortcutPath, string installRoot)
+    {
+        var uninstallKeyPath = @"HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Dayforge";
+        var uninstallScript = $$"""
+param()
+$ErrorActionPreference = 'Stop'
+$shortcutPath = '{{shortcutPath}}'
+$installRoot = '{{installRoot}}'
+$uninstallKeyPath = '{{uninstallKeyPath}}'
+
+if (Test-Path $shortcutPath) {
+    Remove-Item $shortcutPath -Force
+}
+
+if (Test-Path $uninstallKeyPath) {
+    Remove-Item $uninstallKeyPath -Recurse -Force
+}
+
+if (Test-Path $installRoot) {
+    Remove-Item $installRoot -Recurse -Force
+}
+""";
+
+        File.WriteAllText(uninstallScriptPath, uninstallScript);
+    }
+
+    private static void RegisterUninstallEntry(string installRoot, string uninstallScriptPath)
+    {
+        const string uninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\Dayforge";
+        using var key = Registry.CurrentUser.CreateSubKey(uninstallKeyPath, writable: true)
+            ?? throw new InvalidOperationException("Could not create uninstall registry key.");
+
+        key.SetValue("DisplayName", AppName);
+        key.SetValue("DisplayVersion", "VERSION_PLACEHOLDER");
+        key.SetValue("Publisher", Publisher);
+        key.SetValue("InstallLocation", installRoot);
+        key.SetValue("DisplayIcon", Path.Combine(installRoot, AppExecutable));
+        key.SetValue(
+            "UninstallString",
+            $@"powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""{uninstallScriptPath}""");
+        key.SetValue("NoModify", 1, RegistryValueKind.DWord);
+        key.SetValue("NoRepair", 1, RegistryValueKind.DWord);
+    }
+}
+"@
+          $installerSource = $installerSource.Replace("VERSION_PLACEHOLDER", $version)
+          Set-Content -Path (Join-Path $installerDir "Program.cs") -Value $installerSource -Encoding Ascii
+
+          $installerOutput = Join-Path $stagingDir "publish"
+          dotnet publish (Join-Path $installerDir "DayforgeInstaller.csproj") `
+            -c Release -r win-x64 -o $installerOutput
+          Copy-Item (Join-Path $installerOutput "Dayforge-setup.exe") `
+            (Join-Path $env:RUNNER_TEMP "Dayforge-windows-x64-setup.exe") -Force
 
       - name: Upload Windows asset
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release upload $env:GITHUB_REF_NAME "Dayforge-windows-x64.zip" --clobber
+          gh release upload $env:RELEASE_TAG "Dayforge-windows-x64-setup.exe" --clobber
