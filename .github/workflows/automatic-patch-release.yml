@@ -39,11 +39,15 @@ jobs:
 
       - name: Create a patch tag for each untagged main commit
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TAG_TOKEN }}
           RELEASE_BASELINE_SHA: b4b0b92dd793e9486dc2199ce1ff377b94a6b267
           TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "The RELEASE_TAG_TOKEN repository secret is required to create release tags." >&2
+            exit 1
+          fi
 
           mapfile -t history < <(git rev-list --first-parent --reverse "$TARGET_SHA")
           mapfile -t commits < <(
