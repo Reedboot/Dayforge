@@ -37,8 +37,8 @@ Linux data is stored under `$XDG_DATA_HOME/dayforge` or `~/.local/share/dayforge
 
 ## Binaries
 
-After a successful CI run for a change pushed to `main`, automation tags each untagged mainline commit with the next patch version and publishes generated release notes. Tagged preview builds are published on the [GitHub Releases](https://github.com/Reedboot/Dayforge/releases) page as Android APK, Linux x64, and a Windows setup EXE. Manually creating and pushing a `v*` tag also triggers a build.
+After a successful CI run for a change pushed to `main`, automation tags each untagged mainline commit with the next patch version and publishes generated release notes. Tagged preview builds are published on the [GitHub Releases](https://github.com/Reedboot/Dayforge/releases) page as Android APK, Linux x64, and Windows x64 zip downloads. Manually creating and pushing a `v*` tag also triggers a build.
 
 The preview APK is signed with a temporary CI debug key. It is for testing only; later preview APKs may require uninstalling the previous build. A stable private signing key must be configured before distributing APKs that should update existing installs.
 
-The Windows download is a per-user installer. Run the setup EXE to install Dayforge under `%LOCALAPPDATA%\Programs\Dayforge` and create a Start Menu shortcut.
+The Windows download is a portable zip with `Install-Dayforge.cmd`. Run that script after extracting the archive to install Dayforge under `%LOCALAPPDATA%\Programs\Dayforge` and create a Start Menu shortcut.
