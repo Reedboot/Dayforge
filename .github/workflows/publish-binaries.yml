@@ -119,46 +119,46 @@ jobs:
           $releaseDir = Resolve-Path "build/windows/x64/runner/Release"
 
           $installCmd = @'
-@echo off
-setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Dayforge.ps1"
-'@
+          @echo off
+          setlocal
+          powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Dayforge.ps1"
+          '@
           Set-Content -Path (Join-Path $releaseDir.Path "Install-Dayforge.cmd") `
             -Value $installCmd -NoNewline -Encoding Ascii
 
           $installScript = @'
-$ErrorActionPreference = 'Stop'
+          $ErrorActionPreference = 'Stop'
 
-$sourceRoot = $PSScriptRoot
-$targetRoot = Join-Path $env:LOCALAPPDATA 'Programs\Dayforge'
-$programsDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-$shortcutPath = Join-Path $programsDir 'Dayforge.lnk'
-$appExecutable = Join-Path $targetRoot 'dayforge.exe'
+          $sourceRoot = $PSScriptRoot
+          $targetRoot = Join-Path $env:LOCALAPPDATA 'Programs\Dayforge'
+          $programsDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+          $shortcutPath = Join-Path $programsDir 'Dayforge.lnk'
+          $appExecutable = Join-Path $targetRoot 'dayforge.exe'
 
-if (Test-Path $targetRoot) {
-  Remove-Item $targetRoot -Recurse -Force
-}
+          if (Test-Path $targetRoot) {
+            Remove-Item $targetRoot -Recurse -Force
+          }
 
-New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
-Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | ForEach-Object {
-  $relativePath = $_.FullName.Substring($sourceRoot.Length).TrimStart('\')
-  $destinationPath = Join-Path $targetRoot $relativePath
-  New-Item -ItemType Directory -Force -Path (Split-Path $destinationPath) | Out-Null
-  Copy-Item -LiteralPath $_.FullName -Destination $destinationPath -Force
-  Unblock-File -LiteralPath $destinationPath -ErrorAction SilentlyContinue
-}
+          New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
+          Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | ForEach-Object {
+            $relativePath = $_.FullName.Substring($sourceRoot.Length).TrimStart('\')
+            $destinationPath = Join-Path $targetRoot $relativePath
+            New-Item -ItemType Directory -Force -Path (Split-Path $destinationPath) | Out-Null
+            Copy-Item -LiteralPath $_.FullName -Destination $destinationPath -Force
+            Unblock-File -LiteralPath $destinationPath -ErrorAction SilentlyContinue
+          }
 
-New-Item -ItemType Directory -Force -Path $programsDir | Out-Null
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $appExecutable
-$shortcut.WorkingDirectory = $targetRoot
-$shortcut.IconLocation = "$appExecutable,0"
-$shortcut.Description = 'Dayforge'
-$shortcut.Save()
+          New-Item -ItemType Directory -Force -Path $programsDir | Out-Null
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut($shortcutPath)
+          $shortcut.TargetPath = $appExecutable
+          $shortcut.WorkingDirectory = $targetRoot
+          $shortcut.IconLocation = "$appExecutable,0"
+          $shortcut.Description = 'Dayforge'
+          $shortcut.Save()
 
-Start-Process -FilePath $appExecutable
-'@
+          Start-Process -FilePath $appExecutable
+          '@
           Set-Content -Path (Join-Path $releaseDir.Path "Install-Dayforge.ps1") `
             -Value $installScript -NoNewline -Encoding Ascii
 
