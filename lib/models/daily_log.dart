@@ -4,6 +4,8 @@ class DailyLog {
     this.previousOutstandingTasks = '',
     this.emails = '',
     this.meetings = '',
+    this.previousTasks = const [],
+    this.meetingTasks = const [],
     this.tasks = const [],
   });
 
@@ -11,6 +13,8 @@ class DailyLog {
   final String previousOutstandingTasks;
   final String emails;
   final String meetings;
+  final List<DailyTask> previousTasks;
+  final List<DailyTask> meetingTasks;
   final List<DailyTask> tasks;
 
   factory DailyLog.empty(String dateKey) => DailyLog(dateKey: dateKey);
@@ -21,12 +25,20 @@ class DailyLog {
     if (tasks is! List) {
       throw const FormatException('Daily log tasks must be a list.');
     }
+    final previousTasks = json['previousTasks'];
+    final meetingTasks = json['meetingTasks'];
 
     return DailyLog(
       dateKey: _jsonString(json, 'dateKey'),
       previousOutstandingTasks: _jsonString(json, 'previousOutstandingTasks'),
       emails: _jsonString(json, 'emails'),
       meetings: _jsonString(json, 'meetings'),
+      previousTasks: previousTasks is List
+          ? List<DailyTask>.unmodifiable(previousTasks.map(DailyTask.fromJson))
+          : const [],
+      meetingTasks: meetingTasks is List
+          ? List<DailyTask>.unmodifiable(meetingTasks.map(DailyTask.fromJson))
+          : const [],
       tasks: List<DailyTask>.unmodifiable(tasks.map(DailyTask.fromJson)),
     );
   }
@@ -35,6 +47,8 @@ class DailyLog {
     String? previousOutstandingTasks,
     String? emails,
     String? meetings,
+    List<DailyTask>? previousTasks,
+    List<DailyTask>? meetingTasks,
     List<DailyTask>? tasks,
   }) {
     return DailyLog(
@@ -43,6 +57,8 @@ class DailyLog {
           previousOutstandingTasks ?? this.previousOutstandingTasks,
       emails: emails ?? this.emails,
       meetings: meetings ?? this.meetings,
+      previousTasks: previousTasks ?? this.previousTasks,
+      meetingTasks: meetingTasks ?? this.meetingTasks,
       tasks: tasks ?? this.tasks,
     );
   }
@@ -52,6 +68,8 @@ class DailyLog {
     'previousOutstandingTasks': previousOutstandingTasks,
     'emails': emails,
     'meetings': meetings,
+    'previousTasks': previousTasks.map((task) => task.toJson()).toList(),
+    'meetingTasks': meetingTasks.map((task) => task.toJson()).toList(),
     'tasks': tasks.map((task) => task.toJson()).toList(),
   };
 }
@@ -60,12 +78,14 @@ class DailyTask {
   const DailyTask({
     required this.id,
     required this.text,
+    this.details = '',
     this.isComplete = false,
     this.subtasks = const [],
   });
 
   final String id;
   final String text;
+  final String details;
   final bool isComplete;
   final List<DailySubtask> subtasks;
 
@@ -79,6 +99,7 @@ class DailyTask {
     return DailyTask(
       id: _jsonString(json, 'id'),
       text: _jsonString(json, 'text'),
+      details: _jsonOptionalString(json, 'details'),
       isComplete: _jsonBool(json, 'isComplete'),
       subtasks: List<DailySubtask>.unmodifiable(
         subtasks.map(DailySubtask.fromJson),
@@ -87,13 +108,16 @@ class DailyTask {
   }
 
   DailyTask copyWith({
+    String? id,
     String? text,
+    String? details,
     bool? isComplete,
     List<DailySubtask>? subtasks,
   }) {
     return DailyTask(
-      id: id,
+      id: id ?? this.id,
       text: text ?? this.text,
+      details: details ?? this.details,
       isComplete: isComplete ?? this.isComplete,
       subtasks: subtasks ?? this.subtasks,
     );
@@ -102,6 +126,7 @@ class DailyTask {
   Map<String, Object?> toJson() => {
     'id': id,
     'text': text,
+    'details': details,
     'isComplete': isComplete,
     'subtasks': subtasks.map((subtask) => subtask.toJson()).toList(),
   };
@@ -159,6 +184,16 @@ Map<String, Object?> _jsonObject(Object? value, String label) {
 
 String _jsonString(Map<String, Object?> json, String key) {
   final value = json[key];
+  if (value is! String) {
+    throw FormatException('The saved field "$key" must be text.');
+  }
+
+  return value;
+}
+
+String _jsonOptionalString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value == null) return '';
   if (value is! String) {
     throw FormatException('The saved field "$key" must be text.');
   }

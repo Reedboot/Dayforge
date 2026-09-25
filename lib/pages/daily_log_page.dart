@@ -7,10 +7,16 @@ import '../data/daily_log_store.dart';
 import '../models/daily_log.dart';
 
 class DailyLogPage extends StatefulWidget {
-  const DailyLogPage({super.key, this.store, this.initialDate});
+  const DailyLogPage({
+    super.key,
+    this.store,
+    this.initialDate,
+    this.onOpenSettings,
+  });
 
   final DailyLogStore? store;
   final DateTime? initialDate;
+  final VoidCallback? onOpenSettings;
 
   @override
   State<DailyLogPage> createState() => _DailyLogPageState();
@@ -37,6 +43,12 @@ class _DailyLogPageState extends State<DailyLogPage>
 
   String get _dateKey => dailyLogDateKey(_selectedDate);
   DailyLog get _currentLog => _logs[_dateKey] ?? DailyLog.empty(_dateKey);
+  bool get _isSelectedToday {
+    final today = DateTime.now();
+    return _selectedDate.year == today.year &&
+        _selectedDate.month == today.month &&
+        _selectedDate.day == today.day;
+  }
 
   @override
   void initState() {
@@ -85,8 +97,15 @@ class _DailyLogPageState extends State<DailyLogPage>
     try {
       final logs = await _store.loadAll();
       if (!mounted) return;
+      final normalizedLogs = _addOutstandingTasks(logs);
+      if (!normalizedLogs.containsKey(_dateKey)) {
+        normalizedLogs[_dateKey] = DailyLog(
+          dateKey: _dateKey,
+          previousTasks: _outstandingForDate(normalizedLogs, _dateKey),
+        );
+      }
       setState(() {
-        _logs = logs;
+        _logs = normalizedLogs;
         _loading = false;
         _savedRevision = _revision;
         _saveState = _SaveState.saved;
@@ -100,6 +119,79 @@ class _DailyLogPageState extends State<DailyLogPage>
     }
   }
 
+  Map<String, DailyLog> _addOutstandingTasks(Map<String, DailyLog> logs) {
+    final normalized = <String, DailyLog>{};
+    final dates = logs.keys.toList()..sort();
+    final completedIds = <String>{};
+
+    for (final date in dates) {
+      final log = logs[date]!;
+      final previousTasks = log.previousTasks.isNotEmpty
+          ? log.previousTasks
+          : _legacyTasks(log.previousOutstandingTasks, 'previous');
+      final meetingTasks = log.meetingTasks.isNotEmpty
+          ? log.meetingTasks
+          : _legacyTasks(log.meetings, 'meeting');
+      final outstanding = <DailyTask>[];
+
+      for (final priorLog in normalized.values) {
+        for (final task in priorLog.tasks) {
+          if (!task.isComplete &&
+              !completedIds.contains(task.id) &&
+              !outstanding.any((candidate) => candidate.id == task.id)) {
+            outstanding.add(task);
+          }
+        }
+      }
+
+      final existingIds = {
+        ...previousTasks.map((task) => task.id),
+        ...log.tasks.map((task) => task.id),
+      };
+      outstanding.removeWhere((task) => existingIds.contains(task.id));
+      normalized[date] = log.copyWith(
+        previousTasks: [...previousTasks, ...outstanding],
+        meetingTasks: meetingTasks,
+      );
+
+      for (final task in [...log.tasks, ...previousTasks, ...meetingTasks]) {
+        if (task.isComplete) completedIds.add(task.id);
+      }
+    }
+    return normalized;
+  }
+
+  List<DailyTask> _outstandingForDate(
+    Map<String, DailyLog> logs,
+    String dateKey,
+  ) {
+    final outstanding = <DailyTask>[];
+    final completedIds = <String>{};
+    final dates =
+        logs.keys.where((date) => date.compareTo(dateKey) < 0).toList()..sort();
+    for (final date in dates) {
+      final log = logs[date]!;
+      for (final task in log.tasks) {
+        if (!task.isComplete &&
+            !completedIds.contains(task.id) &&
+            !outstanding.any((candidate) => candidate.id == task.id)) {
+          outstanding.add(task);
+        }
+        if (task.isComplete) completedIds.add(task.id);
+      }
+    }
+    return outstanding;
+  }
+
+  List<DailyTask> _legacyTasks(String value, String prefix) {
+    return value
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .map((text) => DailyTask(id: '$prefix-${text.hashCode}', text: text))
+        .toList();
+  }
+
   void _updateLog(DailyLog updatedLog) {
     setState(() {
       _logs[updatedLog.dateKey] = updatedLog;
@@ -111,6 +203,173 @@ class _DailyLogPageState extends State<DailyLogPage>
     _saveTimer = Timer(const Duration(milliseconds: 450), () {
       unawaited(_saveNow());
     });
+  }
+
+  void _updateCollection(_TaskCollection collection, List<DailyTask> tasks) {
+    _updateLog(
+      collection == _TaskCollection.previous
+          ? _currentLog.copyWith(previousTasks: tasks)
+          : _currentLog.copyWith(meetingTasks: tasks),
+    );
+  }
+
+  void _updateCollectionTaskText(
+    _TaskCollection collection,
+    String taskId,
+    String text,
+  ) {
+    final tasks = _collectionTasks(collection)
+        .map((task) => task.id == taskId ? task.copyWith(text: text) : task)
+        .toList();
+    _updateCollection(collection, tasks);
+  }
+
+  void _setCollectionTaskComplete(
+    _TaskCollection collection,
+    String taskId,
+    bool isComplete,
+  ) {
+    final task = _collectionTasks(collection)
+        .firstWhere((task) => task.id == taskId);
+    final remaining = _collectionTasks(collection)
+        .where((task) => task.id != taskId)
+        .toList();
+    final incomplete = remaining.where((task) => !task.isComplete);
+    final complete = remaining.where((task) => task.isComplete);
+    final ordered = isComplete
+        ? [...incomplete, ...complete, task.copyWith(isComplete: true)]
+        : [task.copyWith(isComplete: false), ...incomplete, ...complete];
+    _updateCollection(collection, ordered);
+  }
+
+  Future<void> _deleteCollectionTask(
+    _TaskCollection collection,
+    String taskId,
+  ) async {
+    if (!await _confirmDelete('this task')) return;
+    _updateCollection(
+      collection,
+      _collectionTasks(collection).where((task) => task.id != taskId).toList(),
+    );
+  }
+
+  void _updateCollectionSubtaskText(
+    _TaskCollection collection,
+    String taskId,
+    String subtaskId,
+    String text,
+  ) {
+    final tasks = _collectionTasks(collection).map((task) {
+      if (task.id != taskId) return task;
+      return task.copyWith(
+        subtasks: task.subtasks
+            .map(
+              (subtask) => subtask.id == subtaskId
+                  ? subtask.copyWith(text: text)
+                  : subtask,
+            )
+            .toList(),
+      );
+    }).toList();
+    _updateCollection(collection, tasks);
+  }
+
+  void _setCollectionSubtaskComplete(
+    _TaskCollection collection,
+    String taskId,
+    String subtaskId,
+    bool isComplete,
+  ) {
+    final tasks = _collectionTasks(collection).map((task) {
+      if (task.id != taskId) return task;
+      final subtask = task.subtasks.firstWhere(
+        (subtask) => subtask.id == subtaskId,
+      );
+      final remaining = task.subtasks
+          .where((subtask) => subtask.id != subtaskId)
+          .toList();
+      final incomplete = remaining.where((subtask) => !subtask.isComplete);
+      final complete = remaining.where((subtask) => subtask.isComplete);
+      final ordered = isComplete
+          ? [...incomplete, ...complete, subtask.copyWith(isComplete: true)]
+          : [subtask.copyWith(isComplete: false), ...incomplete, ...complete];
+      return task.copyWith(subtasks: ordered);
+    }).toList();
+    _updateCollection(collection, tasks);
+  }
+
+  Future<void> _deleteCollectionSubtask(
+    _TaskCollection collection,
+    String taskId,
+    String subtaskId,
+  ) async {
+    if (!await _confirmDelete('this action')) return;
+    _updateCollection(
+      collection,
+      _collectionTasks(collection).map((task) {
+        if (task.id != taskId) return task;
+        return task.copyWith(
+          subtasks: task.subtasks
+              .where((subtask) => subtask.id != subtaskId)
+              .toList(),
+        );
+      }).toList(),
+    );
+  }
+
+  Future<void> _addCollectionSubtask(
+    DailyTask task,
+    _TaskCollection collection,
+  ) async {
+    final text = await showDialog<String>(
+      context: context,
+      builder: (context) => const _AddSubtaskDialog(),
+    );
+    if (!mounted || text == null || text.trim().isEmpty) return;
+
+    final tasks = _collectionTasks(collection).map((currentTask) {
+      if (currentTask.id != task.id) return currentTask;
+      return currentTask.copyWith(
+        subtasks: [
+          ...currentTask.subtasks.where((subtask) => !subtask.isComplete),
+          DailySubtask(id: _newEntryId(), text: text.trim()),
+          ...currentTask.subtasks.where((subtask) => subtask.isComplete),
+        ],
+      );
+    }).toList();
+    _updateCollection(collection, tasks);
+  }
+
+  Future<void> _addMeeting() async {
+    final text = await showDialog<String>(
+      context: context,
+      builder: (context) => const _AddMeetingDialog(),
+    );
+    if (!mounted || text == null || text.trim().isEmpty) return;
+    final tasks = [
+      ..._currentLog.meetingTasks.where((task) => !task.isComplete),
+      DailyTask(id: _newEntryId(), text: text.trim()),
+      ..._currentLog.meetingTasks.where((task) => task.isComplete),
+    ];
+    _updateCollection(_TaskCollection.meetings, tasks);
+  }
+
+  Future<void> _addEmail() async {
+    final task = await showDialog<DailyTask>(
+      context: context,
+      builder: (context) => const _AddTaskDialog(
+        dialogTitle: 'Add an email',
+        titleLabel: 'Email',
+        titleHint: 'What needs a response?',
+      ),
+    );
+    if (!mounted || task == null || task.text.trim().isEmpty) return;
+
+    final currentTasks = _currentLog.tasks;
+    final incomplete = currentTasks.where((task) => !task.isComplete).toList();
+    final complete = currentTasks.where((task) => task.isComplete);
+    incomplete.add(task.copyWith(id: _newEntryId()));
+    _updateLog(_currentLog.copyWith(tasks: [...incomplete, ...complete]));
   }
 
   Future<void> _saveNow() async {
@@ -184,9 +443,31 @@ class _DailyLogPageState extends State<DailyLogPage>
     _updateLog(_currentLog.copyWith(tasks: orderedTasks));
   }
 
-  void _deleteTask(String taskId) {
+  Future<void> _deleteTask(String taskId) async {
+    if (!await _confirmDelete('this task')) return;
     final tasks = _currentLog.tasks.where((task) => task.id != taskId).toList();
     _updateLog(_currentLog.copyWith(tasks: tasks));
+  }
+
+  Future<bool> _confirmDelete(String description) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete item?'),
+        content: Text('Are you sure you want to delete $description?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
   }
 
   void _updateSubtaskText(String taskId, String subtaskId, String text) {
@@ -224,7 +505,8 @@ class _DailyLogPageState extends State<DailyLogPage>
     _updateLog(_currentLog.copyWith(tasks: tasks));
   }
 
-  void _deleteSubtask(String taskId, String subtaskId) {
+  Future<void> _deleteSubtask(String taskId, String subtaskId) async {
+    if (!await _confirmDelete('this action')) return;
     final tasks = _currentLog.tasks.map((task) {
       if (task.id != taskId) return task;
       return task.copyWith(
@@ -236,17 +518,18 @@ class _DailyLogPageState extends State<DailyLogPage>
     _updateLog(_currentLog.copyWith(tasks: tasks));
   }
 
-  void _addTask() {
-    final text = _newTaskController.text.trim();
-    if (text.isEmpty) return;
+  Future<void> _addTask() async {
+    final task = await showDialog<DailyTask>(
+      context: context,
+      builder: (context) => const _AddTaskDialog(),
+    );
+    if (!mounted || task == null || task.text.trim().isEmpty) return;
 
     final currentTasks = _currentLog.tasks;
     final incomplete = currentTasks.where((task) => !task.isComplete).toList();
     final complete = currentTasks.where((task) => task.isComplete);
-    incomplete.add(DailyTask(id: _newEntryId(), text: text));
-    _newTaskController.clear();
+    incomplete.add(task.copyWith(id: _newEntryId()));
     _updateLog(_currentLog.copyWith(tasks: [...incomplete, ...complete]));
-    _newTaskFocusNode.requestFocus();
   }
 
   Future<void> _addSubtask(DailyTask task) async {
@@ -277,18 +560,26 @@ class _DailyLogPageState extends State<DailyLogPage>
       lastDate: DateTime(2100),
     );
     if (chosenDate == null || !mounted) return;
-    setState(() {
-      _selectedDate = DateTime(
-        chosenDate.year,
-        chosenDate.month,
-        chosenDate.day,
-      );
-    });
+    _setSelectedDate(
+      DateTime(chosenDate.year, chosenDate.month, chosenDate.day),
+    );
   }
 
   void _changeDate(int amount) {
+    _setSelectedDate(_selectedDate.add(Duration(days: amount)));
+  }
+
+  void _setSelectedDate(DateTime date) {
+    final dateKey = dailyLogDateKey(date);
+    final log = _logs[dateKey];
     setState(() {
-      _selectedDate = _selectedDate.add(Duration(days: amount));
+      _selectedDate = date;
+      if (log == null) {
+        _logs[dateKey] = DailyLog(
+          dateKey: dateKey,
+          previousTasks: _outstandingForDate(_logs, dateKey),
+        );
+      }
     });
   }
 
@@ -302,6 +593,13 @@ class _DailyLogPageState extends State<DailyLogPage>
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [
+          if (widget.onOpenSettings != null)
+            IconButton(
+              key: const ValueKey('settings-button'),
+              tooltip: 'Settings',
+              onPressed: widget.onOpenSettings,
+              icon: const Icon(Icons.settings_outlined),
+            ),
           Padding(
             padding: const EdgeInsets.only(right: 16),
             child: _buildSaveStatus(),
@@ -367,17 +665,7 @@ class _DailyLogPageState extends State<DailyLogPage>
             children: [
               _buildDateNavigation(),
               const SizedBox(height: 22),
-              _buildNotesSection(
-                title: 'Previous outstanding tasks',
-                subtitle: 'Carry forward anything still on your mind.',
-                fieldKey: 'previous-outstanding',
-                value: _currentLog.previousOutstandingTasks,
-                hint: 'Add outstanding work from earlier days...',
-                icon: Icons.history,
-                onChanged: (value) => _updateLog(
-                  _currentLog.copyWith(previousOutstandingTasks: value),
-                ),
-              ),
+              _buildTaskCollectionSection(_TaskCollection.previous),
               const SizedBox(height: 14),
               _buildNotesSection(
                 title: "Today's emails",
@@ -386,20 +674,13 @@ class _DailyLogPageState extends State<DailyLogPage>
                 value: _currentLog.emails,
                 hint: 'Write down emails, replies, or follow-ups...',
                 icon: Icons.mail_outline,
+                actionLabel: 'Add email',
+                onAction: _addEmail,
                 onChanged: (value) =>
                     _updateLog(_currentLog.copyWith(emails: value)),
               ),
               const SizedBox(height: 14),
-              _buildNotesSection(
-                title: "Today's meetings",
-                subtitle: 'Keep notes and decisions in one place.',
-                fieldKey: 'meetings',
-                value: _currentLog.meetings,
-                hint: 'Add meetings, notes, or decisions...',
-                icon: Icons.groups_outlined,
-                onChanged: (value) =>
-                    _updateLog(_currentLog.copyWith(meetings: value)),
-              ),
+              _buildTaskCollectionSection(_TaskCollection.meetings),
               const SizedBox(height: 14),
               _buildTasksSection(),
             ],
@@ -439,6 +720,13 @@ class _DailyLogPageState extends State<DailyLogPage>
                 ),
               ),
             ),
+            if (!_isSelectedToday)
+              TextButton.icon(
+                key: const ValueKey('today-button'),
+                onPressed: () => _setSelectedDate(DateTime.now()),
+                icon: const Icon(Icons.today),
+                label: const Text('Today'),
+              ),
             IconButton(
               key: const ValueKey('next-day'),
               tooltip: 'Next day',
@@ -458,31 +746,274 @@ class _DailyLogPageState extends State<DailyLogPage>
     required String value,
     required String hint,
     required IconData icon,
+    String? actionLabel,
+    VoidCallback? onAction,
     required ValueChanged<String> onChanged,
   }) {
     return _LogSection(
       title: title,
       subtitle: subtitle,
       icon: icon,
-      child: TextFormField(
-        key: ValueKey('$fieldKey-$_dateKey'),
-        initialValue: value,
-        minLines: 3,
-        maxLines: 8,
-        keyboardType: TextInputType.multiline,
-        textCapitalization: TextCapitalization.sentences,
-        onChanged: onChanged,
-        decoration: InputDecoration(
-          hintText: hint,
-          filled: true,
-          fillColor: Theme.of(context).colorScheme.surfaceContainerLowest,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextFormField(
+            key: ValueKey('$fieldKey-$_dateKey'),
+            initialValue: value,
+            minLines: 3,
+            maxLines: 8,
+            keyboardType: TextInputType.multiline,
+            textCapitalization: TextCapitalization.sentences,
+            onChanged: onChanged,
+            decoration: InputDecoration(
+              hintText: hint,
+              filled: true,
+              fillColor: Theme.of(context).colorScheme.surfaceContainerLowest,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide.none,
+              ),
+              contentPadding: const EdgeInsets.all(14),
+            ),
           ),
-          contentPadding: const EdgeInsets.all(14),
-        ),
+          if (actionLabel != null && onAction != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: FilledButton.icon(
+                  key: ValueKey('$fieldKey-action'),
+                  onPressed: onAction,
+                  icon: const Icon(Icons.add),
+                  label: Text(actionLabel),
+                ),
+              ),
+            ),
+        ],
       ),
+    );
+  }
+
+  List<DailyTask> _collectionTasks(_TaskCollection collection) {
+    return collection == _TaskCollection.previous
+        ? _currentLog.previousTasks
+        : _currentLog.meetingTasks;
+  }
+
+  Widget _buildTaskCollectionSection(_TaskCollection collection) {
+    final tasks = _collectionTasks(collection);
+    final isPrevious = collection == _TaskCollection.previous;
+    final title = isPrevious
+        ? 'Previous outstanding tasks'
+        : "Today's meetings";
+    final subtitle = isPrevious
+        ? 'Incomplete tasks from earlier days.'
+        : 'Track meetings, actions, and follow-up points.';
+    final emptyText = isPrevious
+        ? 'No outstanding tasks from earlier days.'
+        : 'Add a meeting to track its actions.';
+    final allPreviousTasksComplete =
+        isPrevious && (tasks.isEmpty || tasks.every((task) => task.isComplete));
+
+    return _LogSection(
+      title: title,
+      subtitle: subtitle,
+      icon: isPrevious ? Icons.history : Icons.groups_outlined,
+      trailing: tasks.isEmpty
+          ? null
+          : _CountBadge(
+              label:
+                  '${tasks.where((task) => task.isComplete).length}/${tasks.length}',
+            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (allPreviousTasksComplete)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 10),
+              child: Text(
+                '😊',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 42),
+              ),
+            ),
+          if (tasks.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Text(
+                emptyText,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            )
+          else ...[
+            ...tasks.map((task) => _buildCollectionTask(task, collection)),
+          ],
+          if (allPreviousTasksComplete && tasks.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: Text(
+                'All outstanding tasks are complete.',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          if (!isPrevious)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: FilledButton.icon(
+                key: const ValueKey('add-meeting-button'),
+                onPressed: _addMeeting,
+                icon: const Icon(Icons.add),
+                label: const Text('Add meeting'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollectionTask(DailyTask task, _TaskCollection collection) {
+    final taskStyle = TextStyle(
+      decoration: task.isComplete ? TextDecoration.lineThrough : null,
+      color: task.isComplete
+          ? Theme.of(context).colorScheme.onSurfaceVariant
+          : null,
+    );
+    return Padding(
+      key: ValueKey('${collection.name}-task-${task.id}'),
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Checkbox(
+                key: ValueKey('${collection.name}-task-checkbox-${task.id}'),
+                value: task.isComplete,
+                onChanged: (value) {
+                  if (value != null) {
+                    _setCollectionTaskComplete(collection, task.id, value);
+                  }
+                },
+              ),
+              Expanded(
+                child: TextFormField(
+                  key: ValueKey(
+                    '${collection.name}-task-text-$_dateKey-${task.id}',
+                  ),
+                  initialValue: task.text,
+                  onChanged: (value) =>
+                      _updateCollectionTaskText(collection, task.id, value),
+                  style: taskStyle,
+                  decoration: const InputDecoration(
+                    hintText: 'Meeting or task',
+                    border: InputBorder.none,
+                    isDense: true,
+                  ),
+                ),
+              ),
+              IconButton(
+                tooltip: 'Add action',
+                onPressed: () => _addCollectionSubtask(task, collection),
+                icon: const Icon(Icons.subdirectory_arrow_right),
+              ),
+              IconButton(
+                tooltip: 'Delete task',
+                onPressed: () =>
+                    unawaited(_deleteCollectionTask(collection, task.id)),
+                icon: const Icon(Icons.delete_outline),
+              ),
+            ],
+          ),
+          if (task.details.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 42, right: 48, bottom: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  task.details,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
+          if (task.subtasks.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 42),
+              child: Column(
+                children: task.subtasks
+                    .map(
+                      (subtask) =>
+                          _buildCollectionSubtask(task, subtask, collection),
+                    )
+                    .toList(),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCollectionSubtask(
+    DailyTask task,
+    DailySubtask subtask,
+    _TaskCollection collection,
+  ) {
+    return Row(
+      key: ValueKey('${collection.name}-subtask-${subtask.id}'),
+      children: [
+        Checkbox(
+          key: ValueKey('${collection.name}-subtask-checkbox-${subtask.id}'),
+          value: subtask.isComplete,
+          visualDensity: VisualDensity.compact,
+          onChanged: (value) {
+            if (value != null) {
+              _setCollectionSubtaskComplete(
+                collection,
+                task.id,
+                subtask.id,
+                value,
+              );
+            }
+          },
+        ),
+        Expanded(
+          child: TextFormField(
+            key: ValueKey(
+              '${collection.name}-subtask-text-$_dateKey-${subtask.id}',
+            ),
+            initialValue: subtask.text,
+            onChanged: (value) => _updateCollectionSubtaskText(
+              collection,
+              task.id,
+              subtask.id,
+              value,
+            ),
+            style: TextStyle(
+              decoration: subtask.isComplete
+                  ? TextDecoration.lineThrough
+                  : null,
+            ),
+            decoration: const InputDecoration(
+              hintText: 'Action',
+              border: InputBorder.none,
+              isDense: true,
+            ),
+          ),
+        ),
+        IconButton(
+          tooltip: 'Delete action',
+          onPressed: () => unawaited(
+            _deleteCollectionSubtask(collection, task.id, subtask.id),
+          ),
+          icon: const Icon(Icons.close),
+          visualDensity: VisualDensity.compact,
+        ),
+      ],
     );
   }
 
@@ -514,41 +1045,14 @@ class _DailyLogPageState extends State<DailyLogPage>
           else
             ...tasks.map(_buildTask),
           if (tasks.isNotEmpty) const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  key: const ValueKey('task-input'),
-                  controller: _newTaskController,
-                  focusNode: _newTaskFocusNode,
-                  textCapitalization: TextCapitalization.sentences,
-                  textInputAction: TextInputAction.done,
-                  onSubmitted: (_) => _addTask(),
-                  decoration: InputDecoration(
-                    hintText: 'Add a task...',
-                    filled: true,
-                    fillColor: Theme.of(context)
-                        .colorScheme
-                        .surfaceContainerLowest,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                      borderSide: BorderSide.none,
-                    ),
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 13,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-              FilledButton.icon(
-                key: const ValueKey('add-task-button'),
-                onPressed: _addTask,
-                icon: const Icon(Icons.add),
-                label: const Text('Add task'),
-              ),
-            ],
+          Align(
+            alignment: Alignment.centerLeft,
+            child: FilledButton.icon(
+              key: const ValueKey('add-task-button'),
+              onPressed: _addTask,
+              icon: const Icon(Icons.add),
+              label: const Text('Add task'),
+            ),
           ),
         ],
       ),
@@ -598,11 +1102,24 @@ class _DailyLogPageState extends State<DailyLogPage>
               ),
               IconButton(
                 tooltip: 'Delete task',
-                onPressed: () => _deleteTask(task.id),
+                onPressed: () => unawaited(_deleteTask(task.id)),
                 icon: const Icon(Icons.delete_outline),
               ),
             ],
           ),
+          if (task.details.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(left: 42, right: 48, bottom: 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  task.details,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ),
           if (task.subtasks.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(left: 42),
@@ -655,7 +1172,7 @@ class _DailyLogPageState extends State<DailyLogPage>
         ),
         IconButton(
           tooltip: 'Delete subtask',
-          onPressed: () => _deleteSubtask(task.id, subtask.id),
+          onPressed: () => unawaited(_deleteSubtask(task.id, subtask.id)),
           icon: const Icon(Icons.close),
           visualDensity: VisualDensity.compact,
         ),
@@ -727,6 +1244,137 @@ class _AddSubtaskDialogState extends State<_AddSubtaskDialog> {
         textCapitalization: TextCapitalization.sentences,
         decoration: const InputDecoration(
           labelText: 'Subtask',
+          border: const OutlineInputBorder(),
+        ),
+        onSubmitted: (value) => Navigator.of(context).pop(value),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('Add'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AddMeetingDialog extends StatefulWidget {
+  const _AddMeetingDialog();
+
+  @override
+  State<_AddMeetingDialog> createState() => _AddMeetingDialogState();
+}
+
+class _AddTaskDialog extends StatefulWidget {
+  const _AddTaskDialog({
+    this.dialogTitle = 'Add a task',
+    this.titleLabel = 'Task',
+    this.titleHint = 'What needs to be done?',
+  });
+
+  final String dialogTitle;
+  final String titleLabel;
+  final String titleHint;
+
+  @override
+  State<_AddTaskDialog> createState() => _AddTaskDialogState();
+}
+
+class _AddTaskDialogState extends State<_AddTaskDialog> {
+  final _titleController = TextEditingController();
+  final _detailsController = TextEditingController();
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _detailsController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(
+      DailyTask(
+        id: '',
+        text: _titleController.text.trim(),
+        details: _detailsController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(widget.dialogTitle),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              key: const ValueKey('task-title-input'),
+              controller: _titleController,
+              autofocus: true,
+              textCapitalization: TextCapitalization.sentences,
+              textInputAction: TextInputAction.next,
+              decoration: InputDecoration(
+                labelText: widget.titleLabel,
+                hintText: widget.titleHint,
+                border: const OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              key: const ValueKey('task-details-input'),
+              controller: _detailsController,
+              textCapitalization: TextCapitalization.sentences,
+              minLines: 3,
+              maxLines: 6,
+              decoration: const InputDecoration(
+                labelText: 'Details',
+                hintText: 'Add context or notes...',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: Text(widget.titleLabel == 'Email' ? 'Add email' : 'Add task'),
+        ),
+      ],
+    );
+  }
+}
+
+class _AddMeetingDialogState extends State<_AddMeetingDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Add a meeting'),
+      content: TextField(
+        key: const ValueKey('meeting-input'),
+        controller: _controller,
+        autofocus: true,
+        textCapitalization: TextCapitalization.sentences,
+        decoration: const InputDecoration(
+          labelText: 'Meeting',
           border: OutlineInputBorder(),
         ),
         onSubmitted: (value) => Navigator.of(context).pop(value),
@@ -840,6 +1488,8 @@ class _CountBadge extends StatelessWidget {
 }
 
 enum _SaveState { saved, pending, saving, error }
+
+enum _TaskCollection { previous, meetings }
 
 String dailyLogDateKey(DateTime date) {
   final year = date.year.toString().padLeft(4, '0');
