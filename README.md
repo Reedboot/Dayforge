@@ -34,3 +34,9 @@ flutter test test/widget_test.dart
 ```
 
 Linux data is stored under `$XDG_DATA_HOME/dayforge` or `~/.local/share/dayforge`. Windows uses `%LOCALAPPDATA%\dayforge`, and Android uses the app's private files directory.
+
+## Binaries
+
+Tagged preview builds are published on the [GitHub Releases](https://github.com/Reedboot/Dayforge/releases) page as Android APK, Linux x64, and Windows x64 downloads. Create and push a `v*` tag to trigger a build.
+
+The preview APK is signed with a temporary CI debug key. It is for testing only; later preview APKs may require uninstalling the previous build. A stable private signing key must be configured before distributing APKs that should update existing installs.

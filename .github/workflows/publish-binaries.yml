@@ -1,0 +1,117 @@
+name: Publish preview binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: 3.47.5
+
+jobs:
+  build-linux-android:
+    name: Build Linux and Android
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch tagged source
+        run: |
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git checkout --detach FETCH_HEAD
+
+      - name: Install Flutter
+        run: |
+          archive="$RUNNER_TEMP/flutter_linux.tar.xz"
+          curl --fail --location \
+            "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_${FLUTTER_VERSION}-stable.tar.xz" \
+            --output "$archive"
+          printf '%s  %s\n' \
+            '2132e990f236f8d22e7c6314b29a191a95b10d7cbcfec9b4e2e303d996652cbb' \
+            "$archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/flutter-sdk"
+          tar -xJf "$archive" -C "$RUNNER_TEMP/flutter-sdk"
+          echo "$RUNNER_TEMP/flutter-sdk/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev libstdc++-12-dev
+
+      - name: Build Linux and Android artifacts
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          flutter pub get
+          flutter build linux --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
+          flutter build apk --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
+          tar -czf Dayforge-linux-x64.tar.gz -C build/linux/x64/release/bundle .
+          cp build/app/outputs/flutter-apk/app-release.apk Dayforge-android-preview.apk
+
+      - name: Publish Linux and Android assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes='Preview binaries. The Android APK uses a temporary CI debug-signing key; later APKs cannot update it in place and may require uninstalling first. Configure a private release keystore before distributing updateable builds.'
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" \
+              Dayforge-linux-x64.tar.gz Dayforge-android-preview.apk --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              Dayforge-linux-x64.tar.gz Dayforge-android-preview.apk \
+              --title "Dayforge $GITHUB_REF_NAME" \
+              --notes "$notes" \
+              --prerelease
+          fi
+
+  build-windows:
+    name: Build Windows
+    needs: build-linux-android
+    runs-on: windows-latest
+    steps:
+      - name: Fetch tagged source
+        shell: pwsh
+        run: |
+          git init
+          git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
+          git fetch --depth=1 origin $env:GITHUB_SHA
+          git checkout --detach FETCH_HEAD
+
+      - name: Install Flutter
+        shell: pwsh
+        run: |
+          $metadata = Invoke-RestMethod "https://storage.googleapis.com/flutter_infra_release/releases/releases_windows.json"
+          $release = $metadata.releases | Where-Object {
+            $_.version -eq $env:FLUTTER_VERSION -and $_.channel -eq "stable"
+          } | Select-Object -First 1
+          if ($null -eq $release) {
+            throw "Flutter $env:FLUTTER_VERSION stable release was not found."
+          }
+          $archive = Join-Path $env:RUNNER_TEMP "flutter-windows.zip"
+          $url = "https://storage.googleapis.com/flutter_infra_release/releases/$($release.archive)"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          $actualHash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $release.sha256) {
+            throw "Flutter SDK checksum verification failed."
+          }
+          $sdkDirectory = Join-Path $env:RUNNER_TEMP "flutter-sdk"
+          Expand-Archive -Path $archive -DestinationPath $sdkDirectory
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $sdkDirectory "flutter\bin")
+
+      - name: Build Windows artifact
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          flutter pub get
+          flutter build windows --release --build-name $version --build-number $env:GITHUB_RUN_NUMBER
+          Compress-Archive -Path "build/windows/x64/runner/Release/*" `
+            -DestinationPath "Dayforge-windows-x64.zip" -Force
+
+      - name: Upload Windows asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release upload $env:GITHUB_REF_NAME "Dayforge-windows-x64.zip" --clobber

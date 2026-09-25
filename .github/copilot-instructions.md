@@ -12,6 +12,7 @@
 - Do not add paid dependencies or MIT-licensed third-party libraries.
 - Before adding a Dart/Flutter package or platform plugin, verify its license and commercial requirements, including transitive runtime dependencies. The app currently declares no additional runtime packages; the Flutter SDK supplies its own transitive dependencies, and tests use `flutter_test` from the SDK.
 - The app uses Dart/Flutter standard libraries and a small Android platform channel for the app-private files directory. Check storage packages independently if replacing this implementation.
+- GitHub preview binaries are published from `v*` tags. The current release APK uses a temporary CI debug-signing key and is not suitable for in-place upgrades; require a stable private signing key before publishing updateable Android releases.
 
 ## Build, test, and analysis
 - Fetch dependencies with `flutter pub get`.
