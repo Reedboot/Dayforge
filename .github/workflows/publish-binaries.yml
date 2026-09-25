@@ -53,8 +53,8 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           flutter pub get
-          flutter build linux --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
-          flutter build apk --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
+          flutter build linux --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER" --dart-define="APP_VERSION=$version"
+          flutter build apk --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER" --dart-define="APP_VERSION=$version"
           tar -czf Dayforge-linux-x64.tar.gz -C build/linux/x64/release/bundle .
           cp build/app/outputs/flutter-apk/app-release.apk Dayforge-android-preview.apk
 
@@ -114,7 +114,7 @@ jobs:
         run: |
           $version = $env:RELEASE_TAG -replace '^v', ''
           flutter pub get
-          flutter build windows --release --build-name $version --build-number $env:GITHUB_RUN_NUMBER
+          flutter build windows --release --build-name $version --build-number $env:GITHUB_RUN_NUMBER --dart-define="APP_VERSION=$version"
 
           $releaseDir = Resolve-Path "build/windows/x64/runner/Release"
 

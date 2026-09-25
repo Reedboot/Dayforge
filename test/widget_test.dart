@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dayforge/app_info.dart';
 import 'package:dayforge/data/daily_log_store.dart';
 import 'package:dayforge/pages/daily_log_page.dart';
 import 'package:flutter/material.dart';
@@ -32,6 +33,7 @@ void main() {
     await _pumpUntilLoaded(tester);
 
     expect(tester.widget<AppBar>(find.byType(AppBar)).centerTitle, isTrue);
+    expect(find.text(appTitle), findsOneWidget);
     expect(find.text('Friday, September 25, 2026'), findsOneWidget);
     expect(find.text('Previous outstanding tasks'), findsOneWidget);
     expect(find.text("Today's emails"), findsOneWidget);
