@@ -39,19 +39,28 @@ void main() {
     expect(find.text("Today's emails"), findsOneWidget);
     expect(find.text("Today's meetings"), findsOneWidget);
 
-    await tester.enterText(
-      find.byKey(const ValueKey('task-input')),
-      'First task',
-    );
     await tester.ensureVisible(find.byKey(const ValueKey('add-task-button')));
     await tester.tap(find.byKey(const ValueKey('add-task-button')));
     await tester.pump();
     await tester.enterText(
-      find.byKey(const ValueKey('task-input')),
+      find.byKey(const ValueKey('task-title-input')),
+      'First task',
+    );
+    await tester.tap(find.text('Add task').last);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('add-task-button')));
+    await tester.pump();
+    await tester.enterText(
+      find.byKey(const ValueKey('task-title-input')),
       'Second task',
     );
+    await tester.enterText(
+      find.byKey(const ValueKey('task-details-input')),
+      'Second task details',
+    );
+    expect(find.text('Second task details'), findsOneWidget);
+    await tester.tap(find.text('Add task').last);
     await tester.ensureVisible(find.byKey(const ValueKey('add-task-button')));
-    await tester.tap(find.byKey(const ValueKey('add-task-button')));
     await tester.pump();
 
     await tester.ensureVisible(find.byTooltip('Add subtask').first);
