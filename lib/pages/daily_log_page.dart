@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../app_info.dart';
 import '../data/daily_log_store.dart';
 import '../models/daily_log.dart';
 
@@ -297,7 +298,7 @@ class _DailyLogPageState extends State<DailyLogPage>
       appBar: AppBar(
         centerTitle: true,
         title: const Text(
-          'Dayforge',
+          appTitle,
           style: TextStyle(fontWeight: FontWeight.w700),
         ),
         actions: [

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'app_info.dart';
 import 'pages/daily_log_page.dart';
 
 void main() {
@@ -14,7 +15,7 @@ class DayforgeApp extends StatelessWidget {
     const seedColor = Color(0xFF376A5A);
 
     return MaterialApp(
-      title: 'Dayforge',
+      title: appTitle,
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
