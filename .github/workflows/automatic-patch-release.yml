@@ -1,0 +1,85 @@
+name: Automatic patch release
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  tag-successful-main-commits:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: automatic-patch-release-main
+      cancel-in-progress: false
+    steps:
+      - name: Fetch main history and tags
+        env:
+          RELEASE_BASELINE_SHA: b4b0b92dd793e9486dc2199ce1ff377b94a6b267
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          git init
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch origin +refs/heads/main:refs/remotes/origin/main --tags
+          git cat-file -e "${RELEASE_BASELINE_SHA}^{commit}"
+          git cat-file -e "${TARGET_SHA}^{commit}"
+          git merge-base --is-ancestor "$RELEASE_BASELINE_SHA" "$TARGET_SHA"
+          git merge-base --is-ancestor "$TARGET_SHA" origin/main
+          git checkout --detach "$TARGET_SHA"
+
+      - name: Create a patch tag for each untagged main commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BASELINE_SHA: b4b0b92dd793e9486dc2199ce1ff377b94a6b267
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t history < <(git rev-list --first-parent --reverse "$TARGET_SHA")
+          mapfile -t commits < <(
+            git rev-list --first-parent --reverse "${RELEASE_BASELINE_SHA}..${TARGET_SHA}"
+          )
+          latest_tag=""
+
+          for commit in "${history[@]}"; do
+            tag="$(git tag --points-at "$commit" --sort=-version:refname |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+            if [[ -n "$tag" ]]; then
+              latest_tag="$tag"
+            fi
+          done
+
+          if [[ -z "$latest_tag" ]]; then
+            echo "No existing vMAJOR.MINOR.PATCH tag found on the target's first-parent history." >&2
+            exit 1
+          fi
+
+          IFS=. read -r major minor patch <<< "${latest_tag#v}"
+          patch=$((10#$patch))
+
+          for commit in "${commits[@]}"; do
+            existing_tag="$(git tag --points-at "$commit" --sort=-version:refname |
+              grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+            if [[ -n "$existing_tag" ]]; then
+              continue
+            fi
+
+            patch=$((patch + 1))
+            tag="v${major}.${minor}.${patch}"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/tags/${tag}" \
+              -f "sha=${commit}"
+            gh workflow run publish-binaries.yml --repo "$GITHUB_REPOSITORY" \
+              --ref main --field "tag=${tag}"
+            echo "::notice title=Patch release tag created::${tag} points to ${commit}"
+          done

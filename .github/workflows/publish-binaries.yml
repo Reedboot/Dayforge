@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -15,12 +21,14 @@ jobs:
   build-linux-android:
     name: Build Linux and Android
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Fetch tagged source
         run: |
           git init
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --depth=1 origin "$GITHUB_SHA"
+          git fetch --depth=1 origin "refs/tags/${RELEASE_TAG}"
           git checkout --detach FETCH_HEAD
 
       - name: Install Flutter
@@ -43,7 +51,7 @@ jobs:
 
       - name: Build Linux and Android artifacts
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           flutter pub get
           flutter build linux --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
           flutter build apk --release --build-name "$version" --build-number "$GITHUB_RUN_NUMBER"
@@ -54,15 +62,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes='Preview binaries. The Android APK uses a temporary CI debug-signing key; later APKs cannot update it in place and may require uninstalling first. Configure a private release keystore before distributing updateable builds.'
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" \
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
               Dayforge-linux-x64.tar.gz Dayforge-android-preview.apk --clobber
           else
-            gh release create "$GITHUB_REF_NAME" \
+            gh release create "$RELEASE_TAG" \
               Dayforge-linux-x64.tar.gz Dayforge-android-preview.apk \
-              --title "Dayforge $GITHUB_REF_NAME" \
-              --notes "$notes" \
+              --title "Dayforge $RELEASE_TAG" \
+              --generate-notes \
               --prerelease
           fi
 
@@ -70,13 +77,15 @@ jobs:
     name: Build Windows
     needs: build-linux-android
     runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - name: Fetch tagged source
         shell: pwsh
         run: |
           git init
           git remote add origin "https://github.com/$env:GITHUB_REPOSITORY.git"
-          git fetch --depth=1 origin $env:GITHUB_SHA
+          git fetch --depth=1 origin "refs/tags/$env:RELEASE_TAG"
           git checkout --detach FETCH_HEAD
 
       - name: Install Flutter
@@ -103,9 +112,56 @@ jobs:
       - name: Build Windows artifact
         shell: pwsh
         run: |
-          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $version = $env:RELEASE_TAG -replace '^v', ''
           flutter pub get
           flutter build windows --release --build-name $version --build-number $env:GITHUB_RUN_NUMBER
+
+          $releaseDir = Resolve-Path "build/windows/x64/runner/Release"
+
+          $installCmd = @'
+@echo off
+setlocal
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install-Dayforge.ps1"
+'@
+          Set-Content -Path (Join-Path $releaseDir.Path "Install-Dayforge.cmd") `
+            -Value $installCmd -NoNewline -Encoding Ascii
+
+          $installScript = @'
+$ErrorActionPreference = 'Stop'
+
+$sourceRoot = $PSScriptRoot
+$targetRoot = Join-Path $env:LOCALAPPDATA 'Programs\Dayforge'
+$programsDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$shortcutPath = Join-Path $programsDir 'Dayforge.lnk'
+$appExecutable = Join-Path $targetRoot 'dayforge.exe'
+
+if (Test-Path $targetRoot) {
+  Remove-Item $targetRoot -Recurse -Force
+}
+
+New-Item -ItemType Directory -Force -Path $targetRoot | Out-Null
+Get-ChildItem -LiteralPath $sourceRoot -Recurse -File | ForEach-Object {
+  $relativePath = $_.FullName.Substring($sourceRoot.Length).TrimStart('\')
+  $destinationPath = Join-Path $targetRoot $relativePath
+  New-Item -ItemType Directory -Force -Path (Split-Path $destinationPath) | Out-Null
+  Copy-Item -LiteralPath $_.FullName -Destination $destinationPath -Force
+  Unblock-File -LiteralPath $destinationPath -ErrorAction SilentlyContinue
+}
+
+New-Item -ItemType Directory -Force -Path $programsDir | Out-Null
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut($shortcutPath)
+$shortcut.TargetPath = $appExecutable
+$shortcut.WorkingDirectory = $targetRoot
+$shortcut.IconLocation = "$appExecutable,0"
+$shortcut.Description = 'Dayforge'
+$shortcut.Save()
+
+Start-Process -FilePath $appExecutable
+'@
+          Set-Content -Path (Join-Path $releaseDir.Path "Install-Dayforge.ps1") `
+            -Value $installScript -NoNewline -Encoding Ascii
+
           Compress-Archive -Path "build/windows/x64/runner/Release/*" `
             -DestinationPath "Dayforge-windows-x64.zip" -Force
 
@@ -114,4 +170,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
-          gh release upload $env:GITHUB_REF_NAME "Dayforge-windows-x64.zip" --clobber
+          gh release upload $env:RELEASE_TAG "Dayforge-windows-x64.zip" --clobber
