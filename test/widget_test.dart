@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dayforge/app_info.dart';
 import 'package:dayforge/data/daily_log_store.dart';
+import 'package:dayforge/models/daily_log.dart';
 import 'package:dayforge/pages/daily_log_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -85,7 +86,16 @@ void main() {
     await tester.tap(find.byType(Checkbox).first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
-    await _waitForSaved(tester);
+    await _waitForSaved(
+      tester,
+      condition: () async {
+        final logs = await store.loadAll();
+        final saved = logs[dateKey];
+        return saved != null &&
+            saved.emails == 'Reply to the project update' &&
+            saved.tasks.length == 2;
+      },
+    );
 
     final savedLogs = await tester.runAsync(store.loadAll);
     expect(savedLogs, isNotNull);
@@ -118,7 +128,14 @@ void main() {
       'Next-day note',
     );
     await tester.pump(const Duration(milliseconds: 600));
-    await _waitForSaved(tester);
+    await _waitForSaved(
+      tester,
+      condition: () async {
+        final logs = await store.loadAll();
+        final saved = logs['2026-09-26'];
+        return saved != null && saved.emails == 'Next-day note';
+      },
+    );
 
     await tester.ensureVisible(find.byKey(const ValueKey('previous-day')));
     await tester.tap(find.byKey(const ValueKey('previous-day')));
@@ -143,6 +160,33 @@ void main() {
     expect(find.text('Second task'), findsOneWidget);
     expect(find.text('First task'), findsOneWidget);
   });
+
+  testWidgets('autosave retries after a transient save failure', (tester) async {
+    final date = DateTime(2026, 9, 25);
+    final flakyStore = _FailOnceDailyLogStore(directory: temporaryDirectory);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(store: flakyStore, initialDate: date),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('emails-2026-09-25')),
+      'Retry me',
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+
+    await _waitForSaved(
+      tester,
+      condition: () async {
+        final logs = await flakyStore.loadAll();
+        return logs['2026-09-25']?.emails == 'Retry me';
+      },
+    );
+    expect(flakyStore.saveAttempts, greaterThanOrEqualTo(2));
+  });
 }
 
 Future<void> _pumpUntilLoaded(WidgetTester tester) async {
@@ -156,13 +200,32 @@ Future<void> _pumpUntilLoaded(WidgetTester tester) async {
   expect(find.byType(CircularProgressIndicator), findsNothing);
 }
 
-Future<void> _waitForSaved(WidgetTester tester) async {
+Future<void> _waitForSaved(
+  WidgetTester tester, {
+  required Future<bool> Function() condition,
+}) async {
   for (var attempt = 0; attempt < 20; attempt++) {
+    final isSaved = await tester.runAsync(condition) ?? false;
+    if (isSaved) return;
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 25)),
     );
     await tester.pump(const Duration(milliseconds: 100));
-    if (find.text('Saved').evaluate().isNotEmpty) return;
   }
-  expect(find.text('Saved'), findsOneWidget);
+  expect(await tester.runAsync(condition) ?? false, isTrue);
+}
+
+class _FailOnceDailyLogStore extends DailyLogStore {
+  _FailOnceDailyLogStore({required super.directory});
+
+  int saveAttempts = 0;
+
+  @override
+  Future<void> saveAll(Map<String, DailyLog> logs) async {
+    saveAttempts++;
+    if (saveAttempts == 1) {
+      throw const FileSystemException('temporary failure');
+    }
+    await super.saveAll(logs);
+  }
 }

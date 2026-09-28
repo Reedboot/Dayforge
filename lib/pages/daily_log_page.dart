@@ -16,7 +16,7 @@ class DailyLogPage extends StatefulWidget {
 
   final DailyLogStore? store;
   final DateTime? initialDate;
-  final VoidCallback? onOpenSettings;
+  final Future<void> Function()? onOpenSettings;
 
   @override
   State<DailyLogPage> createState() => _DailyLogPageState();
@@ -38,8 +38,6 @@ class _DailyLogPageState extends State<DailyLogPage>
   bool _saveAgain = false;
   bool _disposing = false;
   Object? _loadError;
-  Object? _saveError;
-  _SaveState _saveState = _SaveState.saved;
 
   String get _dateKey => dailyLogDateKey(_selectedDate);
   DailyLog get _currentLog => _logs[_dateKey] ?? DailyLog.empty(_dateKey);
@@ -108,7 +106,6 @@ class _DailyLogPageState extends State<DailyLogPage>
         _logs = normalizedLogs;
         _loading = false;
         _savedRevision = _revision;
-        _saveState = _SaveState.saved;
       });
     } catch (error) {
       if (!mounted) return;
@@ -196,8 +193,6 @@ class _DailyLogPageState extends State<DailyLogPage>
     setState(() {
       _logs[updatedLog.dateKey] = updatedLog;
       _revision++;
-      _saveState = _SaveState.pending;
-      _saveError = null;
     });
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 450), () {
@@ -385,39 +380,26 @@ class _DailyLogPageState extends State<DailyLogPage>
     final savingRevision = _revision;
     final snapshot = Map<String, DailyLog>.of(_logs);
     var succeeded = false;
-    if (mounted && !_disposing) {
-      setState(() {
-        _saveState = _SaveState.saving;
-        _saveError = null;
-      });
-    }
-
     try {
       await _store.saveAll(snapshot);
       _savedRevision = savingRevision;
       succeeded = true;
-      if (mounted && !_disposing) {
-        setState(() {
-          _saveState = _revision == savingRevision
-              ? _SaveState.saved
-              : _SaveState.pending;
-        });
-      }
     } catch (error, stackTrace) {
-      if (mounted && !_disposing) {
-        setState(() {
-          _saveState = _SaveState.error;
-          _saveError = error;
-        });
-      } else {
+      if (!mounted || _disposing) {
         Error.throwWithStackTrace(error, stackTrace);
       }
+      _saveAgain = true;
     } finally {
       _saving = false;
       final needsAnotherSave = _saveAgain || _revision != _savedRevision;
       _saveAgain = false;
-      if (succeeded && needsAnotherSave) {
+      final shouldRetry = mounted && !_disposing && needsAnotherSave;
+      if (shouldRetry && succeeded) {
         unawaited(_saveNow());
+      } else if (shouldRetry) {
+        _saveTimer = Timer(const Duration(seconds: 1), () {
+          unawaited(_saveNow());
+        });
       }
     }
   }
@@ -597,13 +579,9 @@ class _DailyLogPageState extends State<DailyLogPage>
             IconButton(
               key: const ValueKey('settings-button'),
               tooltip: 'Settings',
-              onPressed: widget.onOpenSettings,
+              onPressed: () => unawaited(widget.onOpenSettings!.call()),
               icon: const Icon(Icons.settings_outlined),
             ),
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: _buildSaveStatus(),
-          ),
         ],
       ),
       body: _loading
@@ -1180,41 +1158,6 @@ class _DailyLogPageState extends State<DailyLogPage>
     );
   }
 
-  Widget _buildSaveStatus() {
-    final (label, icon, color) = switch (_saveState) {
-      _SaveState.saved => (
-        'Saved',
-        Icons.cloud_done_outlined,
-        Theme.of(context).colorScheme.primary,
-      ),
-      _SaveState.pending => (
-        'Unsaved changes',
-        Icons.schedule,
-        Theme.of(context).colorScheme.onSurfaceVariant,
-      ),
-      _SaveState.saving => (
-        'Saving...',
-        Icons.sync,
-        Theme.of(context).colorScheme.onSurfaceVariant,
-      ),
-      _SaveState.error => (
-        'Save failed',
-        Icons.error_outline,
-        Theme.of(context).colorScheme.error,
-      ),
-    };
-
-    return Tooltip(
-      message: _saveError?.toString() ?? label,
-      child: TextButton.icon(
-        onPressed: _saveState == _SaveState.error
-            ? () => unawaited(_saveNow())
-            : null,
-        icon: Icon(icon, size: 18, color: color),
-        label: Text(label, style: TextStyle(color: color)),
-      ),
-    );
-  }
 }
 
 class _AddSubtaskDialog extends StatefulWidget {
@@ -1486,8 +1429,6 @@ class _CountBadge extends StatelessWidget {
     );
   }
 }
-
-enum _SaveState { saved, pending, saving, error }
 
 enum _TaskCollection { previous, meetings }
 
