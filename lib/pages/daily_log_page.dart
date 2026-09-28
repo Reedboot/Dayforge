@@ -388,12 +388,18 @@ class _DailyLogPageState extends State<DailyLogPage>
       if (!mounted || _disposing) {
         Error.throwWithStackTrace(error, stackTrace);
       }
+      _saveAgain = true;
     } finally {
       _saving = false;
       final needsAnotherSave = _saveAgain || _revision != _savedRevision;
       _saveAgain = false;
-      if (succeeded && needsAnotherSave) {
+      final shouldRetry = mounted && !_disposing && needsAnotherSave;
+      if (shouldRetry && succeeded) {
         unawaited(_saveNow());
+      } else if (shouldRetry) {
+        _saveTimer = Timer(const Duration(seconds: 1), () {
+          unawaited(_saveNow());
+        });
       }
     }
   }
