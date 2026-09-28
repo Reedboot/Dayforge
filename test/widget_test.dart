@@ -85,7 +85,16 @@ void main() {
     await tester.tap(find.byType(Checkbox).first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
-    await _waitForSaved(tester);
+    await _waitForSaved(
+      tester,
+      condition: () async {
+        final logs = await store.loadAll();
+        final saved = logs[dateKey];
+        return saved != null &&
+            saved.emails == 'Reply to the project update' &&
+            saved.tasks.length == 2;
+      },
+    );
 
     final savedLogs = await tester.runAsync(store.loadAll);
     expect(savedLogs, isNotNull);
@@ -118,7 +127,14 @@ void main() {
       'Next-day note',
     );
     await tester.pump(const Duration(milliseconds: 600));
-    await _waitForSaved(tester);
+    await _waitForSaved(
+      tester,
+      condition: () async {
+        final logs = await store.loadAll();
+        final saved = logs['2026-09-26'];
+        return saved != null && saved.emails == 'Next-day note';
+      },
+    );
 
     await tester.ensureVisible(find.byKey(const ValueKey('previous-day')));
     await tester.tap(find.byKey(const ValueKey('previous-day')));
@@ -156,13 +172,17 @@ Future<void> _pumpUntilLoaded(WidgetTester tester) async {
   expect(find.byType(CircularProgressIndicator), findsNothing);
 }
 
-Future<void> _waitForSaved(WidgetTester tester) async {
+Future<void> _waitForSaved(
+  WidgetTester tester, {
+  required Future<bool> Function() condition,
+}) async {
   for (var attempt = 0; attempt < 20; attempt++) {
+    final isSaved = await tester.runAsync(condition) ?? false;
+    if (isSaved) return;
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 25)),
     );
     await tester.pump(const Duration(milliseconds: 100));
-    if (find.text('Saved').evaluate().isNotEmpty) return;
   }
-  expect(find.text('Saved'), findsOneWidget);
+  expect(await tester.runAsync(condition) ?? false, isTrue);
 }
