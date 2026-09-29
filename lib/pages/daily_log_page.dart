@@ -205,13 +205,11 @@ class _DailyLogPageState extends State<DailyLogPage>
   }
 
   void _updateCollection(_TaskCollection collection, List<DailyTask> tasks) {
-    _updateLog(
-      switch (collection) {
-        _TaskCollection.previous => _currentLog.copyWith(previousTasks: tasks),
-        _TaskCollection.emails => _currentLog.copyWith(emailTasks: tasks),
-        _TaskCollection.meetings => _currentLog.copyWith(meetingTasks: tasks),
-      },
-    );
+    _updateLog(switch (collection) {
+      _TaskCollection.previous => _currentLog.copyWith(previousTasks: tasks),
+      _TaskCollection.emails => _currentLog.copyWith(emailTasks: tasks),
+      _TaskCollection.meetings => _currentLog.copyWith(meetingTasks: tasks),
+    });
   }
 
   void _updateCollectionTaskText(
@@ -366,10 +364,7 @@ class _DailyLogPageState extends State<DailyLogPage>
     final incomplete = tasks.where((task) => !task.isComplete).toList();
     final complete = tasks.where((task) => task.isComplete);
     incomplete.add(DailyTask(id: _newEntryId(), text: email.trim()));
-    _updateCollection(
-      _TaskCollection.emails,
-      [...incomplete, ...complete],
-    );
+    _updateCollection(_TaskCollection.emails, [...incomplete, ...complete]);
   }
 
   Future<void> _saveNow() async {
@@ -585,10 +580,7 @@ class _DailyLogPageState extends State<DailyLogPage>
           children: [
             Icon(Icons.event_available, size: 22),
             SizedBox(width: 8),
-            Text(
-              appTitle,
-              style: TextStyle(fontWeight: FontWeight.w700),
-            ),
+            Text(appTitle, style: TextStyle(fontWeight: FontWeight.w700)),
           ],
         ),
         actions: [
@@ -742,8 +734,10 @@ class _DailyLogPageState extends State<DailyLogPage>
     };
     final subtitle = switch (collection) {
       _TaskCollection.previous => 'Incomplete tasks from earlier days.',
-      _TaskCollection.emails => 'Track messages, replies, and follow-up points.',
-      _TaskCollection.meetings => 'Track meetings, actions, and follow-up points.',
+      _TaskCollection.emails =>
+        'Track messages, replies, and follow-up points.',
+      _TaskCollection.meetings =>
+        'Track meetings, actions, and follow-up points.',
     };
     final emptyText = switch (collection) {
       _TaskCollection.previous => 'No outstanding tasks from earlier days.',
@@ -807,7 +801,9 @@ class _DailyLogPageState extends State<DailyLogPage>
             Align(
               alignment: Alignment.centerLeft,
               child: FilledButton.icon(
-                key: ValueKey(isEmail ? 'add-email-button' : 'add-meeting-button'),
+                key: ValueKey(
+                  isEmail ? 'add-email-button' : 'add-meeting-button',
+                ),
                 onPressed: isEmail ? _addEmail : _addMeeting,
                 icon: const Icon(Icons.add),
                 label: Text(isEmail ? 'Add email' : 'Add meeting'),
@@ -1126,7 +1122,6 @@ class _DailyLogPageState extends State<DailyLogPage>
       ],
     );
   }
-
 }
 
 class _AddSubtaskDialog extends StatefulWidget {
@@ -1314,10 +1309,7 @@ class _AddTaskDialogState extends State<_AddTaskDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('Cancel'),
         ),
-        FilledButton(
-          onPressed: _submit,
-          child: const Text('Add task'),
-        ),
+        FilledButton(onPressed: _submit, child: const Text('Add task')),
       ],
     );
   }
@@ -1462,10 +1454,7 @@ class _CountBadge extends StatelessWidget {
 
 BoxConstraints _modalConstraints(BuildContext context) {
   final size = MediaQuery.sizeOf(context);
-  return BoxConstraints(
-    maxWidth: size.width - 48,
-    maxHeight: size.height - 48,
-  );
+  return BoxConstraints(maxWidth: size.width - 48, maxHeight: size.height - 48);
 }
 
 enum _TaskCollection { previous, emails, meetings }

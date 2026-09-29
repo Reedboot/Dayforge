@@ -54,6 +54,31 @@ void main() {
     expect(await store.loadAll(), isEmpty);
   });
 
+  test('exports and imports a dayforge backup', () async {
+    const log = DailyLog(
+      dateKey: '2026-09-25',
+      emailTasks: [DailyTask(id: 'email-1', text: 'Reply to Alex')],
+    );
+    final backup = File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}dayforge.json',
+    );
+
+    await store.saveAll({log.dateKey: log});
+    await store.exportTo(backup);
+
+    final importedDirectory = await Directory.systemTemp.createTemp(
+      'dayforge-import-test',
+    );
+    addTearDown(() => importedDirectory.delete(recursive: true));
+    final importedStore = DailyLogStore(directory: importedDirectory);
+    await importedStore.importFrom(backup);
+
+    expect(
+      (await importedStore.loadAll())[log.dateKey]!.toJson(),
+      log.toJson(),
+    );
+  });
+
   test('reports unsupported saved data instead of replacing it', () async {
     await temporaryDirectory.create(recursive: true);
     await File(

@@ -20,7 +20,30 @@ class DailyLogStore {
       return {};
     }
 
-    final decoded = jsonDecode(await file.readAsString());
+    return _decodeLogs(await file.readAsString());
+  }
+
+  Future<void> exportTo(File destination) async {
+    final logs = await loadAll();
+    await destination.writeAsString(_encodeLogs(logs), flush: true);
+  }
+
+  Future<void> importFrom(File source) async {
+    final logs = _decodeLogs(await source.readAsString());
+    await saveAll(logs);
+  }
+
+  String _encodeLogs(Map<String, DailyLog> logs) {
+    return jsonEncode({
+      'schemaVersion': _schemaVersion,
+      'logs': {
+        for (final entry in logs.entries) entry.key: entry.value.toJson(),
+      },
+    });
+  }
+
+  Map<String, DailyLog> _decodeLogs(String contents) {
+    final decoded = jsonDecode(contents);
     final root = _asStringMap(decoded, 'daily log storage');
     if (root['schemaVersion'] != _schemaVersion) {
       throw const FormatException('Unsupported daily log storage version.');
@@ -45,12 +68,7 @@ class DailyLogStore {
     final file = await _dataFile();
     await file.parent.create(recursive: true);
     final temporaryFile = File('${file.path}.tmp');
-    final contents = jsonEncode({
-      'schemaVersion': _schemaVersion,
-      'logs': {
-        for (final entry in logs.entries) entry.key: entry.value.toJson(),
-      },
-    });
+    final contents = _encodeLogs(logs);
     await temporaryFile.writeAsString(contents, flush: true);
     if (Platform.isWindows && await file.exists()) {
       await file.delete();

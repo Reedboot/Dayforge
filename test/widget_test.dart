@@ -130,7 +130,9 @@ void main() {
     expect(find.text('First task'), findsOneWidget);
   });
 
-  testWidgets('autosave retries after a transient save failure', (tester) async {
+  testWidgets('autosave retries after a transient save failure', (
+    tester,
+  ) async {
     final date = DateTime(2026, 9, 25);
     final flakyStore = _FailOnceDailyLogStore(directory: temporaryDirectory);
 
@@ -194,6 +196,8 @@ void main() {
     expect(find.text('Version $appVersion'), findsOneWidget);
     expect(find.text('Color scheme'), findsOneWidget);
     expect(find.text('Check for updates'), findsOneWidget);
+    expect(find.text('Export dayforge'), findsOneWidget);
+    expect(find.text('Import dayforge'), findsOneWidget);
   });
 }
 
