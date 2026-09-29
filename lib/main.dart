@@ -16,11 +16,16 @@ class DayforgeApp extends StatefulWidget {
 }
 
 class _DayforgeAppState extends State<DayforgeApp> {
+  final _navigatorKey = GlobalKey<NavigatorState>();
   ThemeMode _themeMode = ThemeMode.system;
 
   Future<void> _openSettings() async {
+    final navigator = _navigatorKey.currentState;
+    if (navigator == null) {
+      throw StateError('Settings opened before the app navigator was mounted.');
+    }
     await showDialog<void>(
-      context: context,
+      context: navigator.context,
       builder: (context) => _SettingsDialog(
         themeMode: _themeMode,
         onThemeModeChanged: (mode) => setState(() => _themeMode = mode),
@@ -50,6 +55,7 @@ class _DayforgeAppState extends State<DayforgeApp> {
     return MaterialApp(
       title: appTitle,
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navigatorKey,
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: _themeMode,
@@ -104,56 +110,74 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.sizeOf(context).width - 48,
+        maxHeight: MediaQuery.sizeOf(context).height - 48,
+      ),
+      insetPadding: const EdgeInsets.all(24),
       title: const Text('Settings'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Color scheme',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            DropdownButtonFormField<ThemeMode>(
-              initialValue: _themeMode,
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-              items: const [
-                DropdownMenuItem(
-                  value: ThemeMode.system,
-                  child: Text('System default'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Version $appVersion'),
+              const SizedBox(height: 16),
+              Text(
+                'Color scheme',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+              DropdownButtonFormField<ThemeMode>(
+                initialValue: _themeMode,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
                 ),
-                DropdownMenuItem(value: ThemeMode.light, child: Text('Light')),
-                DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
-              ],
-              onChanged: (value) {
-                if (value == null) return;
-                setState(() => _themeMode = value);
-                widget.onThemeModeChanged(value);
-              },
-            ),
-            const Divider(),
-            Text('Updates', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed: _checking ? null : _checkForUpdate,
-              icon: _checking
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.system_update_outlined),
-              label: Text(_checking ? 'Checking...' : 'Check for updates'),
-            ),
-            if (_updateMessage != null) ...[
-              const SizedBox(height: 10),
-              Text(_updateMessage!),
-            ],
-            if (_update != null && _update!.downloadUrl != null) ...[
+                items: const [
+                  DropdownMenuItem(
+                    value: ThemeMode.system,
+                    child: Text('System default'),
+                  ),
+                  DropdownMenuItem(
+                    value: ThemeMode.light,
+                    child: Text('Light'),
+                  ),
+                  DropdownMenuItem(
+                    value: ThemeMode.dark,
+                    child: Text('Dark'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  setState(() => _themeMode = value);
+                  widget.onThemeModeChanged(value);
+                },
+              ),
+              const Divider(),
+              Text('Updates', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
-              SelectableText(_update!.downloadUrl!),
+              FilledButton.icon(
+                onPressed: _checking ? null : _checkForUpdate,
+                icon: _checking
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.system_update_outlined),
+                label: Text(_checking ? 'Checking...' : 'Check for updates'),
+              ),
+              if (_updateMessage != null) ...[
+                const SizedBox(height: 10),
+                Text(_updateMessage!),
+              ],
+              if (_update != null && _update!.downloadUrl != null) ...[
+                const SizedBox(height: 8),
+                SelectableText(_update!.downloadUrl!),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [

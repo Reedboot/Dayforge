@@ -5,6 +5,7 @@ class DailyLog {
     this.emails = '',
     this.meetings = '',
     this.previousTasks = const [],
+    this.emailTasks = const [],
     this.meetingTasks = const [],
     this.tasks = const [],
   });
@@ -14,6 +15,7 @@ class DailyLog {
   final String emails;
   final String meetings;
   final List<DailyTask> previousTasks;
+  final List<DailyTask> emailTasks;
   final List<DailyTask> meetingTasks;
   final List<DailyTask> tasks;
 
@@ -26,6 +28,7 @@ class DailyLog {
       throw const FormatException('Daily log tasks must be a list.');
     }
     final previousTasks = json['previousTasks'];
+    final emailTasks = json['emailTasks'];
     final meetingTasks = json['meetingTasks'];
 
     return DailyLog(
@@ -35,6 +38,9 @@ class DailyLog {
       meetings: _jsonString(json, 'meetings'),
       previousTasks: previousTasks is List
           ? List<DailyTask>.unmodifiable(previousTasks.map(DailyTask.fromJson))
+          : const [],
+      emailTasks: emailTasks is List
+          ? List<DailyTask>.unmodifiable(emailTasks.map(DailyTask.fromJson))
           : const [],
       meetingTasks: meetingTasks is List
           ? List<DailyTask>.unmodifiable(meetingTasks.map(DailyTask.fromJson))
@@ -48,6 +54,7 @@ class DailyLog {
     String? emails,
     String? meetings,
     List<DailyTask>? previousTasks,
+    List<DailyTask>? emailTasks,
     List<DailyTask>? meetingTasks,
     List<DailyTask>? tasks,
   }) {
@@ -58,6 +65,7 @@ class DailyLog {
       emails: emails ?? this.emails,
       meetings: meetings ?? this.meetings,
       previousTasks: previousTasks ?? this.previousTasks,
+      emailTasks: emailTasks ?? this.emailTasks,
       meetingTasks: meetingTasks ?? this.meetingTasks,
       tasks: tasks ?? this.tasks,
     );
@@ -69,6 +77,7 @@ class DailyLog {
     'emails': emails,
     'meetings': meetings,
     'previousTasks': previousTasks.map((task) => task.toJson()).toList(),
+    'emailTasks': emailTasks.map((task) => task.toJson()).toList(),
     'meetingTasks': meetingTasks.map((task) => task.toJson()).toList(),
     'tasks': tasks.map((task) => task.toJson()).toList(),
   };

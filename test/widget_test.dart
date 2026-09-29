@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dayforge/app_info.dart';
 import 'package:dayforge/data/daily_log_store.dart';
+import 'package:dayforge/main.dart';
 import 'package:dayforge/models/daily_log.dart';
 import 'package:dayforge/pages/daily_log_page.dart';
 import 'package:flutter/material.dart';
@@ -34,6 +35,7 @@ void main() {
     await _pumpUntilLoaded(tester);
 
     expect(tester.widget<AppBar>(find.byType(AppBar)).centerTitle, isTrue);
+    expect(find.byIcon(Icons.event_available), findsOneWidget);
     expect(find.text(appTitle), findsOneWidget);
     expect(find.text('Friday, September 25, 2026'), findsOneWidget);
     expect(find.text('Previous outstanding tasks'), findsOneWidget);
@@ -76,12 +78,6 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    await tester.ensureVisible(find.byKey(const ValueKey('emails-$dateKey')));
-    await tester.enterText(
-      find.byKey(const ValueKey('emails-$dateKey')),
-      'Reply to the project update',
-    );
-
     await tester.ensureVisible(find.byType(Checkbox).first);
     await tester.tap(find.byType(Checkbox).first);
     await tester.pump();
@@ -91,9 +87,7 @@ void main() {
       condition: () async {
         final logs = await store.loadAll();
         final saved = logs[dateKey];
-        return saved != null &&
-            saved.emails == 'Reply to the project update' &&
-            saved.tasks.length == 2;
+        return saved != null && saved.tasks.length == 2;
       },
     );
 
@@ -106,7 +100,6 @@ void main() {
     ]);
     expect(savedLog.tasks.last.isComplete, isTrue);
     expect(savedLog.tasks.last.subtasks.single.text, 'Book a room');
-    expect(savedLog.emails, 'Reply to the project update');
 
     final completedTaskField = tester.widget<TextField>(
       find.descendant(
@@ -122,29 +115,9 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('next-day')));
     await tester.pump();
     expect(find.text('Saturday, September 26, 2026'), findsOneWidget);
-    await tester.ensureVisible(find.byKey(const ValueKey('emails-2026-09-26')));
-    await tester.enterText(
-      find.byKey(const ValueKey('emails-2026-09-26')),
-      'Next-day note',
-    );
-    await tester.pump(const Duration(milliseconds: 600));
-    await _waitForSaved(
-      tester,
-      condition: () async {
-        final logs = await store.loadAll();
-        final saved = logs['2026-09-26'];
-        return saved != null && saved.emails == 'Next-day note';
-      },
-    );
-
     await tester.ensureVisible(find.byKey(const ValueKey('previous-day')));
     await tester.tap(find.byKey(const ValueKey('previous-day')));
     await tester.pump();
-    final originalEmailField = tester.widget<TextFormField>(
-      find.byKey(const ValueKey('emails-2026-09-25')),
-    );
-    expect(originalEmailField.initialValue, 'Reply to the project update');
-
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpWidget(
       MaterialApp(
@@ -153,10 +126,6 @@ void main() {
     );
     await _pumpUntilLoaded(tester);
 
-    final emailField = tester.widget<TextFormField>(
-      find.byKey(const ValueKey('emails-2026-09-25')),
-    );
-    expect(emailField.initialValue, 'Reply to the project update');
     expect(find.text('Second task'), findsOneWidget);
     expect(find.text('First task'), findsOneWidget);
   });
@@ -172,20 +141,59 @@ void main() {
     );
     await _pumpUntilLoaded(tester);
 
+    await tester.tap(find.byKey(const ValueKey('add-email-button')));
+    await tester.pump();
     await tester.enterText(
-      find.byKey(const ValueKey('emails-2026-09-25')),
+      find.byKey(const ValueKey('email-input')),
       'Retry me',
     );
+    await tester.tap(find.byKey(const ValueKey('add-email-dialog-button')));
+    await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
 
     await _waitForSaved(
       tester,
       condition: () async {
         final logs = await flakyStore.loadAll();
-        return logs['2026-09-25']?.emails == 'Retry me';
+        return logs['2026-09-25']?.emailTasks.single.text == 'Retry me';
       },
     );
     expect(flakyStore.saveAttempts, greaterThanOrEqualTo(2));
+  });
+
+  testWidgets('adds an email checkpoint through its modal', (tester) async {
+    final date = DateTime(2026, 9, 25);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(store: store, initialDate: date),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    await tester.ensureVisible(find.byKey(const ValueKey('add-email-button')));
+    await tester.tap(find.byKey(const ValueKey('add-email-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('email-input')),
+      'Reply to the project update',
+    );
+    await tester.tap(find.byKey(const ValueKey('add-email-dialog-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Reply to the project update'), findsOneWidget);
+  });
+
+  testWidgets('opens settings from the app bar', (tester) async {
+    await tester.pumpWidget(const DayforgeApp());
+    await _pumpUntilLoaded(tester);
+
+    await tester.tap(find.byKey(const ValueKey('settings-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Version $appVersion'), findsOneWidget);
+    expect(find.text('Color scheme'), findsOneWidget);
+    expect(find.text('Check for updates'), findsOneWidget);
   });
 }
 

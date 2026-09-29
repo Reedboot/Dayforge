@@ -129,6 +129,9 @@ class _DailyLogPageState extends State<DailyLogPage>
       final meetingTasks = log.meetingTasks.isNotEmpty
           ? log.meetingTasks
           : _legacyTasks(log.meetings, 'meeting');
+      final emailTasks = log.emailTasks.isNotEmpty
+          ? log.emailTasks
+          : _legacyTasks(log.emails, 'email');
       final outstanding = <DailyTask>[];
 
       for (final priorLog in normalized.values) {
@@ -148,6 +151,7 @@ class _DailyLogPageState extends State<DailyLogPage>
       outstanding.removeWhere((task) => existingIds.contains(task.id));
       normalized[date] = log.copyWith(
         previousTasks: [...previousTasks, ...outstanding],
+        emailTasks: emailTasks,
         meetingTasks: meetingTasks,
       );
 
@@ -202,9 +206,11 @@ class _DailyLogPageState extends State<DailyLogPage>
 
   void _updateCollection(_TaskCollection collection, List<DailyTask> tasks) {
     _updateLog(
-      collection == _TaskCollection.previous
-          ? _currentLog.copyWith(previousTasks: tasks)
-          : _currentLog.copyWith(meetingTasks: tasks),
+      switch (collection) {
+        _TaskCollection.previous => _currentLog.copyWith(previousTasks: tasks),
+        _TaskCollection.emails => _currentLog.copyWith(emailTasks: tasks),
+        _TaskCollection.meetings => _currentLog.copyWith(meetingTasks: tasks),
+      },
     );
   }
 
@@ -350,21 +356,20 @@ class _DailyLogPageState extends State<DailyLogPage>
   }
 
   Future<void> _addEmail() async {
-    final task = await showDialog<DailyTask>(
+    final email = await showDialog<String>(
       context: context,
-      builder: (context) => const _AddTaskDialog(
-        dialogTitle: 'Add an email',
-        titleLabel: 'Email',
-        titleHint: 'What needs a response?',
-      ),
+      builder: (context) => const _AddEmailDialog(),
     );
-    if (!mounted || task == null || task.text.trim().isEmpty) return;
+    if (!mounted || email == null || email.trim().isEmpty) return;
 
-    final currentTasks = _currentLog.tasks;
-    final incomplete = currentTasks.where((task) => !task.isComplete).toList();
-    final complete = currentTasks.where((task) => task.isComplete);
-    incomplete.add(task.copyWith(id: _newEntryId()));
-    _updateLog(_currentLog.copyWith(tasks: [...incomplete, ...complete]));
+    final tasks = _collectionTasks(_TaskCollection.emails);
+    final incomplete = tasks.where((task) => !task.isComplete).toList();
+    final complete = tasks.where((task) => task.isComplete);
+    incomplete.add(DailyTask(id: _newEntryId(), text: email.trim()));
+    _updateCollection(
+      _TaskCollection.emails,
+      [...incomplete, ...complete],
+    );
   }
 
   Future<void> _saveNow() async {
@@ -435,8 +440,13 @@ class _DailyLogPageState extends State<DailyLogPage>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
+        constraints: _modalConstraints(context),
+        insetPadding: const EdgeInsets.all(24),
         title: const Text('Delete item?'),
-        content: Text('Are you sure you want to delete $description?'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Text('Are you sure you want to delete $description?'),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -570,9 +580,16 @@ class _DailyLogPageState extends State<DailyLogPage>
     return Scaffold(
       appBar: AppBar(
         centerTitle: true,
-        title: const Text(
-          appTitle,
-          style: TextStyle(fontWeight: FontWeight.w700),
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.event_available, size: 22),
+            SizedBox(width: 8),
+            Text(
+              appTitle,
+              style: TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ],
         ),
         actions: [
           if (widget.onOpenSettings != null)
@@ -645,18 +662,7 @@ class _DailyLogPageState extends State<DailyLogPage>
               const SizedBox(height: 22),
               _buildTaskCollectionSection(_TaskCollection.previous),
               const SizedBox(height: 14),
-              _buildNotesSection(
-                title: "Today's emails",
-                subtitle: 'Capture important messages and follow-ups.',
-                fieldKey: 'emails',
-                value: _currentLog.emails,
-                hint: 'Write down emails, replies, or follow-ups...',
-                icon: Icons.mail_outline,
-                actionLabel: 'Add email',
-                onAction: _addEmail,
-                onChanged: (value) =>
-                    _updateLog(_currentLog.copyWith(emails: value)),
-              ),
+              _buildTaskCollectionSection(_TaskCollection.emails),
               const SizedBox(height: 14),
               _buildTaskCollectionSection(_TaskCollection.meetings),
               const SizedBox(height: 14),
@@ -717,86 +723,44 @@ class _DailyLogPageState extends State<DailyLogPage>
     );
   }
 
-  Widget _buildNotesSection({
-    required String title,
-    required String subtitle,
-    required String fieldKey,
-    required String value,
-    required String hint,
-    required IconData icon,
-    String? actionLabel,
-    VoidCallback? onAction,
-    required ValueChanged<String> onChanged,
-  }) {
-    return _LogSection(
-      title: title,
-      subtitle: subtitle,
-      icon: icon,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          TextFormField(
-            key: ValueKey('$fieldKey-$_dateKey'),
-            initialValue: value,
-            minLines: 3,
-            maxLines: 8,
-            keyboardType: TextInputType.multiline,
-            textCapitalization: TextCapitalization.sentences,
-            onChanged: onChanged,
-            decoration: InputDecoration(
-              hintText: hint,
-              filled: true,
-              fillColor: Theme.of(context).colorScheme.surfaceContainerLowest,
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
-              contentPadding: const EdgeInsets.all(14),
-            ),
-          ),
-          if (actionLabel != null && onAction != null)
-            Align(
-              alignment: Alignment.centerLeft,
-              child: Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: FilledButton.icon(
-                  key: ValueKey('$fieldKey-action'),
-                  onPressed: onAction,
-                  icon: const Icon(Icons.add),
-                  label: Text(actionLabel),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   List<DailyTask> _collectionTasks(_TaskCollection collection) {
-    return collection == _TaskCollection.previous
-        ? _currentLog.previousTasks
-        : _currentLog.meetingTasks;
+    return switch (collection) {
+      _TaskCollection.previous => _currentLog.previousTasks,
+      _TaskCollection.emails => _currentLog.emailTasks,
+      _TaskCollection.meetings => _currentLog.meetingTasks,
+    };
   }
 
   Widget _buildTaskCollectionSection(_TaskCollection collection) {
     final tasks = _collectionTasks(collection);
     final isPrevious = collection == _TaskCollection.previous;
-    final title = isPrevious
-        ? 'Previous outstanding tasks'
-        : "Today's meetings";
-    final subtitle = isPrevious
-        ? 'Incomplete tasks from earlier days.'
-        : 'Track meetings, actions, and follow-up points.';
-    final emptyText = isPrevious
-        ? 'No outstanding tasks from earlier days.'
-        : 'Add a meeting to track its actions.';
+    final isEmail = collection == _TaskCollection.emails;
+    final title = switch (collection) {
+      _TaskCollection.previous => 'Previous outstanding tasks',
+      _TaskCollection.emails => "Today's emails",
+      _TaskCollection.meetings => "Today's meetings",
+    };
+    final subtitle = switch (collection) {
+      _TaskCollection.previous => 'Incomplete tasks from earlier days.',
+      _TaskCollection.emails => 'Track messages, replies, and follow-up points.',
+      _TaskCollection.meetings => 'Track meetings, actions, and follow-up points.',
+    };
+    final emptyText = switch (collection) {
+      _TaskCollection.previous => 'No outstanding tasks from earlier days.',
+      _TaskCollection.emails => 'Add an email to track its follow-up points.',
+      _TaskCollection.meetings => 'Add a meeting to track its actions.',
+    };
     final allPreviousTasksComplete =
         isPrevious && (tasks.isEmpty || tasks.every((task) => task.isComplete));
 
     return _LogSection(
       title: title,
       subtitle: subtitle,
-      icon: isPrevious ? Icons.history : Icons.groups_outlined,
+      icon: isPrevious
+          ? Icons.history
+          : isEmail
+          ? Icons.mail_outline
+          : Icons.groups_outlined,
       trailing: tasks.isEmpty
           ? null
           : _CountBadge(
@@ -843,10 +807,10 @@ class _DailyLogPageState extends State<DailyLogPage>
             Align(
               alignment: Alignment.centerLeft,
               child: FilledButton.icon(
-                key: const ValueKey('add-meeting-button'),
-                onPressed: _addMeeting,
+                key: ValueKey(isEmail ? 'add-email-button' : 'add-meeting-button'),
+                onPressed: isEmail ? _addEmail : _addMeeting,
                 icon: const Icon(Icons.add),
-                label: const Text('Add meeting'),
+                label: Text(isEmail ? 'Add email' : 'Add meeting'),
               ),
             ),
         ],
@@ -855,6 +819,11 @@ class _DailyLogPageState extends State<DailyLogPage>
   }
 
   Widget _buildCollectionTask(DailyTask task, _TaskCollection collection) {
+    final taskHint = switch (collection) {
+      _TaskCollection.previous => 'Task',
+      _TaskCollection.emails => 'Email checkpoint',
+      _TaskCollection.meetings => 'Meeting or task',
+    };
     final taskStyle = TextStyle(
       decoration: task.isComplete ? TextDecoration.lineThrough : null,
       color: task.isComplete
@@ -886,8 +855,8 @@ class _DailyLogPageState extends State<DailyLogPage>
                   onChanged: (value) =>
                       _updateCollectionTaskText(collection, task.id, value),
                   style: taskStyle,
-                  decoration: const InputDecoration(
-                    hintText: 'Meeting or task',
+                  decoration: InputDecoration(
+                    hintText: taskHint,
                     border: InputBorder.none,
                     isDense: true,
                   ),
@@ -1179,17 +1148,22 @@ class _AddSubtaskDialogState extends State<_AddSubtaskDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      constraints: _modalConstraints(context),
+      insetPadding: const EdgeInsets.all(24),
       title: const Text('Add a subtask'),
-      content: TextField(
-        key: const ValueKey('subtask-input'),
-        controller: _controller,
-        autofocus: true,
-        textCapitalization: TextCapitalization.sentences,
-        decoration: const InputDecoration(
-          labelText: 'Subtask',
-          border: const OutlineInputBorder(),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: TextField(
+          key: const ValueKey('subtask-input'),
+          controller: _controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            labelText: 'Subtask',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
         ),
-        onSubmitted: (value) => Navigator.of(context).pop(value),
       ),
       actions: [
         TextButton(
@@ -1205,6 +1179,60 @@ class _AddSubtaskDialogState extends State<_AddSubtaskDialog> {
   }
 }
 
+class _AddEmailDialog extends StatefulWidget {
+  const _AddEmailDialog();
+
+  @override
+  State<_AddEmailDialog> createState() => _AddEmailDialogState();
+}
+
+class _AddEmailDialogState extends State<_AddEmailDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      constraints: _modalConstraints(context),
+      insetPadding: const EdgeInsets.all(24),
+      title: const Text('Add an email checkpoint'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: TextField(
+          key: const ValueKey('email-input'),
+          controller: _controller,
+          autofocus: true,
+          minLines: 4,
+          maxLines: 10,
+          keyboardType: TextInputType.multiline,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            labelText: 'Email',
+            hintText: 'What needs a response or follow-up?',
+            border: OutlineInputBorder(),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const ValueKey('add-email-dialog-button'),
+          onPressed: () => Navigator.of(context).pop(_controller.text),
+          child: const Text('Add email'),
+        ),
+      ],
+    );
+  }
+}
+
 class _AddMeetingDialog extends StatefulWidget {
   const _AddMeetingDialog();
 
@@ -1213,15 +1241,7 @@ class _AddMeetingDialog extends StatefulWidget {
 }
 
 class _AddTaskDialog extends StatefulWidget {
-  const _AddTaskDialog({
-    this.dialogTitle = 'Add a task',
-    this.titleLabel = 'Task',
-    this.titleHint = 'What needs to be done?',
-  });
-
-  final String dialogTitle;
-  final String titleLabel;
-  final String titleHint;
+  const _AddTaskDialog();
 
   @override
   State<_AddTaskDialog> createState() => _AddTaskDialogState();
@@ -1251,37 +1271,42 @@ class _AddTaskDialogState extends State<_AddTaskDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.dialogTitle),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              key: const ValueKey('task-title-input'),
-              controller: _titleController,
-              autofocus: true,
-              textCapitalization: TextCapitalization.sentences,
-              textInputAction: TextInputAction.next,
-              decoration: InputDecoration(
-                labelText: widget.titleLabel,
-                hintText: widget.titleHint,
-                border: const OutlineInputBorder(),
+      constraints: _modalConstraints(context),
+      insetPadding: const EdgeInsets.all(24),
+      title: const Text('Add a task'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                key: const ValueKey('task-title-input'),
+                controller: _titleController,
+                autofocus: true,
+                textCapitalization: TextCapitalization.sentences,
+                textInputAction: TextInputAction.next,
+                decoration: const InputDecoration(
+                  labelText: 'Task',
+                  hintText: 'What needs to be done?',
+                  border: const OutlineInputBorder(),
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              key: const ValueKey('task-details-input'),
-              controller: _detailsController,
-              textCapitalization: TextCapitalization.sentences,
-              minLines: 3,
-              maxLines: 6,
-              decoration: const InputDecoration(
-                labelText: 'Details',
-                hintText: 'Add context or notes...',
-                border: OutlineInputBorder(),
+              const SizedBox(height: 14),
+              TextField(
+                key: const ValueKey('task-details-input'),
+                controller: _detailsController,
+                textCapitalization: TextCapitalization.sentences,
+                minLines: 3,
+                maxLines: 6,
+                decoration: const InputDecoration(
+                  labelText: 'Details',
+                  hintText: 'Add context or notes...',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
       actions: [
@@ -1291,7 +1316,7 @@ class _AddTaskDialogState extends State<_AddTaskDialog> {
         ),
         FilledButton(
           onPressed: _submit,
-          child: Text(widget.titleLabel == 'Email' ? 'Add email' : 'Add task'),
+          child: const Text('Add task'),
         ),
       ],
     );
@@ -1310,17 +1335,22 @@ class _AddMeetingDialogState extends State<_AddMeetingDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
+      constraints: _modalConstraints(context),
+      insetPadding: const EdgeInsets.all(24),
       title: const Text('Add a meeting'),
-      content: TextField(
-        key: const ValueKey('meeting-input'),
-        controller: _controller,
-        autofocus: true,
-        textCapitalization: TextCapitalization.sentences,
-        decoration: const InputDecoration(
-          labelText: 'Meeting',
-          border: OutlineInputBorder(),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: TextField(
+          key: const ValueKey('meeting-input'),
+          controller: _controller,
+          autofocus: true,
+          textCapitalization: TextCapitalization.sentences,
+          decoration: const InputDecoration(
+            labelText: 'Meeting',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (value) => Navigator.of(context).pop(value),
         ),
-        onSubmitted: (value) => Navigator.of(context).pop(value),
       ),
       actions: [
         TextButton(
@@ -1430,7 +1460,15 @@ class _CountBadge extends StatelessWidget {
   }
 }
 
-enum _TaskCollection { previous, meetings }
+BoxConstraints _modalConstraints(BuildContext context) {
+  final size = MediaQuery.sizeOf(context);
+  return BoxConstraints(
+    maxWidth: size.width - 48,
+    maxHeight: size.height - 48,
+  );
+}
+
+enum _TaskCollection { previous, emails, meetings }
 
 String dailyLogDateKey(DateTime date) {
   final year = date.year.toString().padLeft(4, '0');
