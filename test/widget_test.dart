@@ -194,14 +194,18 @@ void main() {
     addTearDown(() => backupDirectory.delete(recursive: true));
     final backupStore = DailyLogStore(directory: backupDirectory);
     const importedLog = DailyLog(dateKey: '2026-09-26');
-    await backupStore.saveAll({importedLog.dateKey: importedLog});
     final backup = File(
       '${backupDirectory.path}${Platform.pathSeparator}dayforge.json',
     );
-    await backupStore.exportTo(backup);
+    await tester.runAsync(() async {
+      await backupStore.saveAll({importedLog.dateKey: importedLog});
+      await backupStore.exportTo(backup);
+    });
 
-    await pageKey.currentState!.prepareForImport();
-    await store.importFrom(backup);
+    await tester.runAsync(() async {
+      await pageKey.currentState!.prepareForImport();
+      await store.importFrom(backup);
+    });
     await tester.pumpWidget(
       MaterialApp(
         home: DailyLogPage(
