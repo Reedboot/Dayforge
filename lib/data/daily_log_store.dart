@@ -23,16 +23,16 @@ class DailyLogStore {
     return _decodeLogs(await file.readAsString());
   }
 
-  Future<void> exportTo(File destination) async {
-    final logs = await loadAll();
-    await destination.writeAsString(_encodeLogs(logs), flush: true);
+  Future<void> exportTo(File destination, {Map<String, DailyLog>? logs}) async {
+    final snapshot = logs ?? await loadAll();
+    await destination.writeAsString(_encodeLogs(snapshot), flush: true);
   }
 
-  Future<bool> exportToAndroid() async {
-    final logs = await loadAll();
+  Future<bool> exportToAndroid({Map<String, DailyLog>? logs}) async {
+    final snapshot = logs ?? await loadAll();
     return await _storageChannel.invokeMethod<bool>(
           'exportBackup',
-          _encodeLogs(logs),
+          _encodeLogs(snapshot),
         ) ??
         false;
   }

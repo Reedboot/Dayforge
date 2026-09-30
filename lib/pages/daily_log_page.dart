@@ -19,10 +19,10 @@ class DailyLogPage extends StatefulWidget {
   final Future<void> Function()? onOpenSettings;
 
   @override
-  State<DailyLogPage> createState() => _DailyLogPageState();
+  State<DailyLogPage> createState() => DailyLogPageState();
 }
 
-class _DailyLogPageState extends State<DailyLogPage>
+class DailyLogPageState extends State<DailyLogPage>
     with WidgetsBindingObserver {
   late final DailyLogStore _store;
   late DateTime _selectedDate;
@@ -37,7 +37,21 @@ class _DailyLogPageState extends State<DailyLogPage>
   bool _saving = false;
   bool _saveAgain = false;
   bool _disposing = false;
+  bool _suppressAutosaves = false;
+  bool _suppressDisposeSave = false;
+  Completer<void>? _activeSave;
+  final Completer<void> _logsLoaded = Completer<void>();
   Object? _loadError;
+
+  Map<String, DailyLog> get logsSnapshot => Map.unmodifiable(_logs);
+
+  Future<Map<String, DailyLog>> snapshotForExport() async {
+    await _logsLoaded.future;
+    if (_loadError != null) {
+      throw StateError('Daily logs could not be loaded: $_loadError');
+    }
+    return logsSnapshot;
+  }
 
   String get _dateKey => dailyLogDateKey(_selectedDate);
   DailyLog get _currentLog => _logs[_dateKey] ?? DailyLog.empty(_dateKey);
@@ -67,7 +81,7 @@ class _DailyLogPageState extends State<DailyLogPage>
     _disposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
-    if (_revision != _savedRevision) {
+    if (_revision != _savedRevision && !_suppressDisposeSave) {
       unawaited(_saveNow());
     }
     _newTaskController.dispose();
@@ -113,6 +127,8 @@ class _DailyLogPageState extends State<DailyLogPage>
         _loadError = error;
         _loading = false;
       });
+    } finally {
+      if (!_logsLoaded.isCompleted) _logsLoaded.complete();
     }
   }
 
@@ -202,6 +218,25 @@ class _DailyLogPageState extends State<DailyLogPage>
     _saveTimer = Timer(const Duration(milliseconds: 450), () {
       unawaited(_saveNow());
     });
+  }
+
+  Future<void> prepareForImport() async {
+    await _logsLoaded.future;
+    _suppressAutosaves = true;
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    await _activeSave?.future;
+    _suppressDisposeSave = true;
+  }
+
+  void resumeAutosaves() {
+    _suppressAutosaves = false;
+    _suppressDisposeSave = false;
+    if (_revision != _savedRevision && !_loading && _loadError == null) {
+      _saveTimer = Timer(const Duration(milliseconds: 450), () {
+        unawaited(_saveNow());
+      });
+    }
   }
 
   void _updateCollection(_TaskCollection collection, List<DailyTask> tasks) {
@@ -370,6 +405,7 @@ class _DailyLogPageState extends State<DailyLogPage>
   Future<void> _saveNow() async {
     _saveTimer?.cancel();
     _saveTimer = null;
+    if (_suppressAutosaves) return;
     if (_loading || _loadError != null || _revision == _savedRevision) return;
     if (_saving) {
       _saveAgain = true;
@@ -377,6 +413,8 @@ class _DailyLogPageState extends State<DailyLogPage>
     }
 
     _saving = true;
+    final activeSave = Completer<void>();
+    _activeSave = activeSave;
     final savingRevision = _revision;
     final snapshot = Map<String, DailyLog>.of(_logs);
     var succeeded = false;
@@ -393,7 +431,8 @@ class _DailyLogPageState extends State<DailyLogPage>
       _saving = false;
       final needsAnotherSave = _saveAgain || _revision != _savedRevision;
       _saveAgain = false;
-      final shouldRetry = mounted && !_disposing && needsAnotherSave;
+      final shouldRetry =
+          mounted && !_disposing && !_suppressAutosaves && needsAnotherSave;
       if (shouldRetry && succeeded) {
         unawaited(_saveNow());
       } else if (shouldRetry) {
@@ -401,6 +440,8 @@ class _DailyLogPageState extends State<DailyLogPage>
           unawaited(_saveNow());
         });
       }
+      activeSave.complete();
+      if (identical(_activeSave, activeSave)) _activeSave = null;
     }
   }
 

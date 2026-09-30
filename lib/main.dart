@@ -6,6 +6,7 @@ import 'package:file_selector/file_selector.dart';
 import 'app_info.dart';
 import 'data/daily_log_store.dart';
 import 'data/update_service.dart';
+import 'models/daily_log.dart';
 import 'pages/daily_log_page.dart';
 
 void main() {
@@ -22,8 +23,8 @@ class DayforgeApp extends StatefulWidget {
 class _DayforgeAppState extends State<DayforgeApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
   final _store = DailyLogStore();
+  GlobalKey<DailyLogPageState> _pageKey = GlobalKey<DailyLogPageState>();
   ThemeMode _themeMode = ThemeMode.system;
-  int _dataRevision = 0;
 
   Future<void> _openSettings() async {
     final navigator = _navigatorKey.currentState;
@@ -35,8 +36,13 @@ class _DayforgeAppState extends State<DayforgeApp> {
       builder: (context) => _SettingsDialog(
         store: _store,
         themeMode: _themeMode,
+        getLogsSnapshot: () => _pageKey.currentState!.snapshotForExport(),
+        prepareForImport: () => _pageKey.currentState!.prepareForImport(),
+        resumeAutosaves: () => _pageKey.currentState?.resumeAutosaves(),
         onThemeModeChanged: (mode) => setState(() => _themeMode = mode),
-        onDataImported: () => setState(() => _dataRevision++),
+        onDataImported: () => setState(
+          () => _pageKey = GlobalKey<DailyLogPageState>(),
+        ),
       ),
     );
   }
@@ -68,7 +74,7 @@ class _DayforgeAppState extends State<DayforgeApp> {
       darkTheme: darkTheme,
       themeMode: _themeMode,
       home: DailyLogPage(
-        key: ValueKey(_dataRevision),
+        key: _pageKey,
         store: _store,
         onOpenSettings: _openSettings,
       ),
@@ -80,12 +86,18 @@ class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog({
     required this.store,
     required this.themeMode,
+    required this.getLogsSnapshot,
+    required this.prepareForImport,
+    required this.resumeAutosaves,
     required this.onThemeModeChanged,
     required this.onDataImported,
   });
 
   final DailyLogStore store;
   final ThemeMode themeMode;
+  final Future<Map<String, DailyLog>> Function() getLogsSnapshot;
+  final Future<void> Function() prepareForImport;
+  final VoidCallback resumeAutosaves;
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final VoidCallback onDataImported;
 
@@ -114,7 +126,11 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     });
     try {
       if (Platform.isAndroid) {
-        if (!await widget.store.exportToAndroid()) return;
+        if (!await widget.store.exportToAndroid(
+          logs: await widget.getLogsSnapshot(),
+        )) {
+          return;
+        }
       } else {
         final path = (await getSaveLocation(
               suggestedName: 'dayforge.json',
@@ -122,7 +138,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             ))
             ?.path;
         if (path == null || path.isEmpty) return;
-        await widget.store.exportTo(File(path));
+        await widget.store.exportTo(
+          File(path),
+          logs: await widget.getLogsSnapshot(),
+        );
       }
       if (!mounted) return;
       setState(() => _backupMessage = 'Backup exported successfully.');
@@ -139,14 +158,18 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       _backupBusy = true;
       _backupMessage = null;
     });
+    var importPrepared = false;
     try {
       final file = await openFile(acceptedTypeGroups: [_backupType]);
       if (file == null) return;
+      await widget.prepareForImport();
+      importPrepared = true;
       await widget.store.importFrom(File(file.path));
       if (!mounted) return;
       widget.onDataImported();
       setState(() => _backupMessage = 'Backup imported successfully.');
     } catch (error) {
+      if (importPrepared) widget.resumeAutosaves();
       if (!mounted) return;
       setState(() => _backupMessage = 'Import failed: $error');
     } finally {

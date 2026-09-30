@@ -79,6 +79,34 @@ void main() {
     );
   });
 
+  test('exports the supplied in-memory snapshot', () async {
+    const persistedLog = DailyLog(dateKey: '2026-09-25');
+    const snapshotLog = DailyLog(
+      dateKey: '2026-09-26',
+      emailTasks: [DailyTask(id: 'email-1', text: 'Unsaved email')],
+    );
+    final backup = File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}dayforge.json',
+    );
+    await store.saveAll({persistedLog.dateKey: persistedLog});
+
+    await store.exportTo(backup, logs: {snapshotLog.dateKey: snapshotLog});
+
+    final importedDirectory = await Directory.systemTemp.createTemp(
+      'dayforge-snapshot-test',
+    );
+    addTearDown(() => importedDirectory.delete(recursive: true));
+    final importedStore = DailyLogStore(directory: importedDirectory);
+    await importedStore.importFrom(backup);
+
+    final imported = await importedStore.loadAll();
+    final persisted = await store.loadAll();
+    expect(imported.keys, {snapshotLog.dateKey});
+    expect(imported[snapshotLog.dateKey]!.toJson(), snapshotLog.toJson());
+    expect(persisted.keys, {persistedLog.dateKey});
+    expect(persisted[persistedLog.dateKey]!.toJson(), persistedLog.toJson());
+  });
+
   test('reports unsupported saved data instead of replacing it', () async {
     await temporaryDirectory.create(recursive: true);
     await File(
