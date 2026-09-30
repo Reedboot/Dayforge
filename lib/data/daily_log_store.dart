@@ -28,6 +28,15 @@ class DailyLogStore {
     await destination.writeAsString(_encodeLogs(logs), flush: true);
   }
 
+  Future<bool> exportToAndroid() async {
+    final logs = await loadAll();
+    return await _storageChannel.invokeMethod<bool>(
+          'exportBackup',
+          _encodeLogs(logs),
+        ) ??
+        false;
+  }
+
   Future<void> importFrom(File source) async {
     final logs = _decodeLogs(await source.readAsString());
     await saveAll(logs);

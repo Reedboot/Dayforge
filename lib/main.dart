@@ -113,17 +113,17 @@ class _SettingsDialogState extends State<_SettingsDialog> {
       _backupMessage = null;
     });
     try {
-      final path = Platform.isAndroid
-          ? await getDirectoryPath()
-          : (await getSaveLocation(
+      if (Platform.isAndroid) {
+        if (!await widget.store.exportToAndroid()) return;
+      } else {
+        final path = (await getSaveLocation(
               suggestedName: 'dayforge.json',
               acceptedTypeGroups: [_backupType],
-            ))?.path;
-      if (path == null || path.isEmpty) return;
-      final destination = Platform.isAndroid
-          ? File('$path${Platform.pathSeparator}dayforge.json')
-          : File(path);
-      await widget.store.exportTo(destination);
+            ))
+            ?.path;
+        if (path == null || path.isEmpty) return;
+        await widget.store.exportTo(File(path));
+      }
       if (!mounted) return;
       setState(() => _backupMessage = 'Backup exported successfully.');
     } catch (error) {
