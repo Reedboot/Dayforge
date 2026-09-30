@@ -188,20 +188,24 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('add-email-dialog-button')));
     await tester.pump();
 
-    final backupDirectory = await Directory.systemTemp.createTemp(
-      'dayforge-widget-import',
-    );
+    final backupDirectory = (await tester.runAsync(
+      () => Directory.systemTemp.createTemp('dayforge-widget-import'),
+    ))!;
     addTearDown(() => backupDirectory.delete(recursive: true));
     final backupStore = DailyLogStore(directory: backupDirectory);
     const importedLog = DailyLog(dateKey: '2026-09-26');
-    await backupStore.saveAll({importedLog.dateKey: importedLog});
     final backup = File(
       '${backupDirectory.path}${Platform.pathSeparator}dayforge.json',
     );
-    await backupStore.exportTo(backup);
+    await tester.runAsync(() async {
+      await backupStore.saveAll({importedLog.dateKey: importedLog});
+      await backupStore.exportTo(backup);
+    });
 
-    await pageKey.currentState!.prepareForImport();
-    await store.importFrom(backup);
+    await tester.runAsync(() async {
+      await pageKey.currentState!.prepareForImport();
+      await store.importFrom(backup);
+    });
     await tester.pumpWidget(
       MaterialApp(
         home: DailyLogPage(
