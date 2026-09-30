@@ -1,7 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:file_selector/file_selector.dart';
 
 import 'app_info.dart';
+import 'data/daily_log_store.dart';
 import 'data/update_service.dart';
+import 'models/daily_log.dart';
 import 'pages/daily_log_page.dart';
 
 void main() {
@@ -17,6 +22,8 @@ class DayforgeApp extends StatefulWidget {
 
 class _DayforgeAppState extends State<DayforgeApp> {
   final _navigatorKey = GlobalKey<NavigatorState>();
+  final _store = DailyLogStore();
+  GlobalKey<DailyLogPageState> _pageKey = GlobalKey<DailyLogPageState>();
   ThemeMode _themeMode = ThemeMode.system;
 
   Future<void> _openSettings() async {
@@ -27,8 +34,15 @@ class _DayforgeAppState extends State<DayforgeApp> {
     await showDialog<void>(
       context: navigator.context,
       builder: (context) => _SettingsDialog(
+        store: _store,
         themeMode: _themeMode,
+        getLogsSnapshot: () => _pageKey.currentState!.snapshotForExport(),
+        prepareForImport: () => _pageKey.currentState!.prepareForImport(),
+        resumeAutosaves: () => _pageKey.currentState?.resumeAutosaves(),
         onThemeModeChanged: (mode) => setState(() => _themeMode = mode),
+        onDataImported: () => setState(
+          () => _pageKey = GlobalKey<DailyLogPageState>(),
+        ),
       ),
     );
   }
@@ -59,19 +73,33 @@ class _DayforgeAppState extends State<DayforgeApp> {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: _themeMode,
-      home: DailyLogPage(onOpenSettings: _openSettings),
+      home: DailyLogPage(
+        key: _pageKey,
+        store: _store,
+        onOpenSettings: _openSettings,
+      ),
     );
   }
 }
 
 class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog({
+    required this.store,
     required this.themeMode,
+    required this.getLogsSnapshot,
+    required this.prepareForImport,
+    required this.resumeAutosaves,
     required this.onThemeModeChanged,
+    required this.onDataImported,
   });
 
+  final DailyLogStore store;
   final ThemeMode themeMode;
+  final Future<Map<String, DailyLog>> Function() getLogsSnapshot;
+  final Future<void> Function() prepareForImport;
+  final VoidCallback resumeAutosaves;
   final ValueChanged<ThemeMode> onThemeModeChanged;
+  final VoidCallback onDataImported;
 
   @override
   State<_SettingsDialog> createState() => _SettingsDialogState();
@@ -81,8 +109,73 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   final _updateService = UpdateService();
   late ThemeMode _themeMode = widget.themeMode;
   bool _checking = false;
+  bool _backupBusy = false;
   String? _updateMessage;
   UpdateInfo? _update;
+  String? _backupMessage;
+
+  static const _backupType = XTypeGroup(
+    label: 'Dayforge backup',
+    extensions: ['json'],
+  );
+
+  Future<void> _exportData() async {
+    setState(() {
+      _backupBusy = true;
+      _backupMessage = null;
+    });
+    try {
+      if (Platform.isAndroid) {
+        if (!await widget.store.exportToAndroid(
+          logs: await widget.getLogsSnapshot(),
+        )) {
+          return;
+        }
+      } else {
+        final path = (await getSaveLocation(
+              suggestedName: 'dayforge.json',
+              acceptedTypeGroups: [_backupType],
+            ))
+            ?.path;
+        if (path == null || path.isEmpty) return;
+        await widget.store.exportTo(
+          File(path),
+          logs: await widget.getLogsSnapshot(),
+        );
+      }
+      if (!mounted) return;
+      setState(() => _backupMessage = 'Backup exported successfully.');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _backupMessage = 'Export failed: $error');
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
+
+  Future<void> _importData() async {
+    setState(() {
+      _backupBusy = true;
+      _backupMessage = null;
+    });
+    var importPrepared = false;
+    try {
+      final file = await openFile(acceptedTypeGroups: [_backupType]);
+      if (file == null) return;
+      await widget.prepareForImport();
+      importPrepared = true;
+      await widget.store.importFrom(File(file.path));
+      if (!mounted) return;
+      widget.onDataImported();
+      setState(() => _backupMessage = 'Backup imported successfully.');
+    } catch (error) {
+      if (importPrepared) widget.resumeAutosaves();
+      if (!mounted) return;
+      setState(() => _backupMessage = 'Import failed: $error');
+    } finally {
+      if (mounted) setState(() => _backupBusy = false);
+    }
+  }
 
   Future<void> _checkForUpdate() async {
     setState(() {
@@ -131,9 +224,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               ),
               DropdownButtonFormField<ThemeMode>(
                 initialValue: _themeMode,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                ),
+                decoration: const InputDecoration(border: OutlineInputBorder()),
                 items: const [
                   DropdownMenuItem(
                     value: ThemeMode.system,
@@ -143,10 +234,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                     value: ThemeMode.light,
                     child: Text('Light'),
                   ),
-                  DropdownMenuItem(
-                    value: ThemeMode.dark,
-                    child: Text('Dark'),
-                  ),
+                  DropdownMenuItem(value: ThemeMode.dark, child: Text('Dark')),
                 ],
                 onChanged: (value) {
                   if (value == null) return;
@@ -175,6 +263,32 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               if (_update != null && _update!.downloadUrl != null) ...[
                 const SizedBox(height: 8),
                 SelectableText(_update!.downloadUrl!),
+              ],
+              const Divider(),
+              Text('Data', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _backupBusy ? null : _exportData,
+                      icon: const Icon(Icons.upload_file_outlined),
+                      label: const Text('Export dayforge'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: _backupBusy ? null : _importData,
+                      icon: const Icon(Icons.download_outlined),
+                      label: const Text('Import dayforge'),
+                    ),
+                  ),
+                ],
+              ),
+              if (_backupMessage != null) ...[
+                const SizedBox(height: 10),
+                Text(_backupMessage!),
               ],
             ],
           ),

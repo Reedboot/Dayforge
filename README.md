@@ -35,6 +35,10 @@ flutter test test/widget_test.dart
 
 Linux data is stored under `$XDG_DATA_HOME/dayforge` or `~/.local/share/dayforge`. Windows uses `%LOCALAPPDATA%\dayforge`, and Android uses the app's private files directory.
 
+Use Settings > Data to export a portable `dayforge.json` backup or import one
+from an external location. Existing backups are validated before replacing the
+local data.
+
 ## Binaries
 
 After a successful CI run for a change pushed to `main`, automation tags each untagged mainline commit with the next patch version and publishes generated release notes. Tagged preview builds are published on the [GitHub Releases](https://github.com/Reedboot/Dayforge/releases) page as Android APK, Linux x64, and Windows x64 zip downloads. Manually creating and pushing a `v*` tag also triggers a build.

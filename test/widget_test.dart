@@ -130,7 +130,9 @@ void main() {
     expect(find.text('First task'), findsOneWidget);
   });
 
-  testWidgets('autosave retries after a transient save failure', (tester) async {
+  testWidgets('autosave retries after a transient save failure', (
+    tester,
+  ) async {
     final date = DateTime(2026, 9, 25);
     final flakyStore = _FailOnceDailyLogStore(directory: temporaryDirectory);
 
@@ -159,6 +161,61 @@ void main() {
       },
     );
     expect(flakyStore.saveAttempts, greaterThanOrEqualTo(2));
+  });
+
+  testWidgets('import prevents pending old-page autosaves from overwriting it', (
+    tester,
+  ) async {
+    final date = DateTime(2026, 9, 25);
+    final pageKey = GlobalKey<DailyLogPageState>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(
+          key: pageKey,
+          store: store,
+          initialDate: date,
+        ),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    await tester.tap(find.byKey(const ValueKey('add-email-button')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('email-input')),
+      'Unsaved old-page edit',
+    );
+    await tester.tap(find.byKey(const ValueKey('add-email-dialog-button')));
+    await tester.pump();
+
+    final backupDirectory = await Directory.systemTemp.createTemp(
+      'dayforge-widget-import',
+    );
+    addTearDown(() => backupDirectory.delete(recursive: true));
+    final backupStore = DailyLogStore(directory: backupDirectory);
+    const importedLog = DailyLog(dateKey: '2026-09-26');
+    await backupStore.saveAll({importedLog.dateKey: importedLog});
+    final backup = File(
+      '${backupDirectory.path}${Platform.pathSeparator}dayforge.json',
+    );
+    await backupStore.exportTo(backup);
+
+    await pageKey.currentState!.prepareForImport();
+    await store.importFrom(backup);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(
+          key: GlobalKey<DailyLogPageState>(),
+          store: store,
+          initialDate: date,
+        ),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    final importedLogs = await tester.runAsync(store.loadAll);
+    expect(importedLogs!.keys, {importedLog.dateKey});
+    expect(importedLogs[importedLog.dateKey]!.toJson(), importedLog.toJson());
   });
 
   testWidgets('adds an email checkpoint through its modal', (tester) async {
@@ -194,6 +251,8 @@ void main() {
     expect(find.text('Version $appVersion'), findsOneWidget);
     expect(find.text('Color scheme'), findsOneWidget);
     expect(find.text('Check for updates'), findsOneWidget);
+    expect(find.text('Export dayforge'), findsOneWidget);
+    expect(find.text('Import dayforge'), findsOneWidget);
   });
 }
 
