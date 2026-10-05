@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dayforge/app_info.dart';
@@ -163,6 +164,216 @@ void main() {
     expect(flakyStore.saveAttempts, greaterThanOrEqualTo(2));
   });
 
+  testWidgets(
+    'deletion during an in-flight save preserves external additions',
+    (tester) async {
+      const dateKey = '2026-09-25';
+      final blockingStore = _BlockingUpdateDailyLogStore(
+        directory: temporaryDirectory,
+        taskToAddBeforeUpdate: const DailyTask(
+          id: 'external-task',
+          text: 'External addition',
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DailyLogPage(
+            store: blockingStore,
+            initialDate: DateTime(2026, 9, 25),
+          ),
+        ),
+      );
+      await _pumpUntilLoaded(tester);
+
+      await tester.tap(find.byKey(const ValueKey('add-task-button')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('task-title-input')),
+        'Delete during save',
+      );
+      await tester.tap(find.text('Add task').last);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.runAsync(() => blockingStore.saveStarted.future);
+
+      await tester.tap(find.byTooltip('Delete task'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete'));
+      await tester.pump();
+      await tester.runAsync(() async => blockingStore.allowSave.complete());
+
+      await _waitForSaved(
+        tester,
+        condition: () async {
+          final tasks =
+              (await blockingStore.loadAll())[dateKey]?.tasks ?? const [];
+          return tasks.length == 1 && tasks.single.id == 'external-task';
+        },
+      );
+      expect(find.text('Delete during save'), findsNothing);
+      expect(find.text('External addition'), findsOneWidget);
+    },
+  );
+
+  testWidgets('shows tasks added to storage while the page is open', (
+    tester,
+  ) async {
+    const dateKey = '2026-09-25';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(store: store, initialDate: DateTime(2026, 9, 25)),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    await tester.runAsync(
+      () => store.saveAll({
+        dateKey: const DailyLog(
+          dateKey: dateKey,
+          tasks: [DailyTask(id: 'cli-task', text: 'Added by CLI')],
+        ),
+      }),
+    );
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      if (find.text('Added by CLI').evaluate().isNotEmpty) break;
+    }
+
+    expect(find.text('Added by CLI'), findsOneWidget);
+  });
+
+  testWidgets('refresh keeps a local deletion and merges a CLI addition', (
+    tester,
+  ) async {
+    const dateKey = '2026-09-25';
+    const savedTask = DailyTask(id: 'saved-task', text: 'Delete me');
+    await store.saveAll({
+      dateKey: const DailyLog(dateKey: dateKey, tasks: [savedTask]),
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(store: store, initialDate: DateTime(2026, 9, 25)),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    await tester.tap(find.byTooltip('Delete task'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pump();
+
+    await tester.runAsync(
+      () => store.updateAll((logs) {
+        final log = logs[dateKey]!;
+        logs[dateKey] = log.copyWith(
+          tasks: [
+            ...log.tasks,
+            const DailyTask(id: 'cli-task', text: 'Keep me'),
+          ],
+        );
+        return logs;
+      }),
+    );
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      if (find.text('Keep me').evaluate().isNotEmpty) break;
+    }
+
+    expect(find.text('Delete me'), findsNothing);
+    expect(find.text('Keep me'), findsOneWidget);
+    await _waitForSaved(
+      tester,
+      condition: () async {
+        final saved = (await store.loadAll())[dateKey]!;
+        return saved.tasks.length == 1 && saved.tasks.single.id == 'cli-task';
+      },
+    );
+  });
+
+  testWidgets('normalizes a newly discovered date from all merged logs', (
+    tester,
+  ) async {
+    await store.saveAll({
+      '2026-09-25': const DailyLog(
+        dateKey: '2026-09-25',
+        tasks: [DailyTask(id: 'outstanding', text: 'Carry this forward')],
+      ),
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(store: store, initialDate: DateTime(2026, 9, 24)),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+    await tester.runAsync(
+      () => store.updateAll((logs) {
+        logs['2026-09-26'] = const DailyLog(
+          dateKey: '2026-09-26',
+          tasks: [DailyTask(id: 'cli-task', text: 'Added later')],
+        );
+        return logs;
+      }),
+    );
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      if (find.text('Added later').evaluate().isNotEmpty) break;
+    }
+
+    await tester.tap(find.byKey(const ValueKey('next-day')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('next-day')));
+    await tester.pump();
+
+    expect(find.text('Saturday, September 26, 2026'), findsOneWidget);
+    expect(find.text('Carry this forward'), findsOneWidget);
+    expect(find.text('Added later'), findsOneWidget);
+  });
+
+  testWidgets(
+    'refreshes after the external watcher subscribes',
+    (tester) async {
+      final delayedStore = _DelayedWatchDailyLogStore(
+        directory: temporaryDirectory,
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DailyLogPage(
+            store: delayedStore,
+            initialDate: DateTime(2026, 9, 25),
+          ),
+        ),
+      );
+      await _pumpUntilLoaded(tester);
+
+      await tester.runAsync(
+        () => delayedStore.saveAll({
+          '2026-09-25': const DailyLog(
+            dateKey: '2026-09-25',
+            tasks: [DailyTask(id: 'startup-task', text: 'During startup')],
+          ),
+        }),
+      );
+      delayedStore.allowWatch.complete();
+      for (var attempt = 0; attempt < 20; attempt++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump(const Duration(milliseconds: 250));
+        if (find.text('During startup').evaluate().isNotEmpty) break;
+      }
+
+      expect(find.text('During startup'), findsOneWidget);
+    },
+  );
+
   testWidgets('import prevents pending old-page autosaves from overwriting it', (
     tester,
   ) async {
@@ -292,11 +503,59 @@ class _FailOnceDailyLogStore extends DailyLogStore {
   int saveAttempts = 0;
 
   @override
-  Future<void> saveAll(Map<String, DailyLog> logs) async {
+  Future<Map<String, DailyLog>> updateAll(
+    Map<String, DailyLog> Function(Map<String, DailyLog> logs) update,
+  ) async {
     saveAttempts++;
     if (saveAttempts == 1) {
       throw const FileSystemException('temporary failure');
     }
+    return super.updateAll(update);
+  }
+}
+
+class _BlockingUpdateDailyLogStore extends DailyLogStore {
+  _BlockingUpdateDailyLogStore({
+    required super.directory,
+    this.taskToAddBeforeUpdate,
+  });
+
+  final Completer<void> saveStarted = Completer<void>();
+  final Completer<void> allowSave = Completer<void>();
+  DailyTask? taskToAddBeforeUpdate;
+  bool _blockNextSave = true;
+
+  @override
+  Future<Map<String, DailyLog>> updateAll(
+    Map<String, DailyLog> Function(Map<String, DailyLog> logs) update,
+  ) async {
+    final diskLogs = await super.loadAll();
+    final externalTask = taskToAddBeforeUpdate;
+    if (externalTask != null) {
+      taskToAddBeforeUpdate = null;
+      const dateKey = '2026-09-25';
+      final log = diskLogs[dateKey] ?? DailyLog.empty(dateKey);
+      diskLogs[dateKey] = log.copyWith(tasks: [...log.tasks, externalTask]);
+    }
+    final logs = update(diskLogs);
+    if (_blockNextSave) {
+      _blockNextSave = false;
+      saveStarted.complete();
+      await allowSave.future;
+    }
     await super.saveAll(logs);
+    return logs;
+  }
+}
+
+class _DelayedWatchDailyLogStore extends DailyLogStore {
+  _DelayedWatchDailyLogStore({required super.directory});
+
+  final Completer<void> allowWatch = Completer<void>();
+
+  @override
+  Future<Stream<void>> watchChanges() async {
+    await allowWatch.future;
+    return const Stream<void>.empty();
   }
 }

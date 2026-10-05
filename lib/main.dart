@@ -4,12 +4,24 @@ import 'package:flutter/material.dart';
 import 'package:file_selector/file_selector.dart';
 
 import 'app_info.dart';
+import 'cli.dart';
 import 'data/daily_log_store.dart';
 import 'data/update_service.dart';
 import 'models/daily_log.dart';
 import 'pages/daily_log_page.dart';
 
-void main() {
+Future<void> main(List<String> args) async {
+  if (args.isNotEmpty) {
+    var result = 1;
+    try {
+      result = await runDayforgeCli(args);
+    } catch (error) {
+      stderr.writeln('Dayforge command failed: $error');
+    }
+    await stdout.flush();
+    await stderr.flush();
+    exit(result);
+  }
   runApp(const DayforgeApp());
 }
 

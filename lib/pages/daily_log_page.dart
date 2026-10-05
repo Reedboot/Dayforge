@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -28,6 +29,7 @@ class DailyLogPageState extends State<DailyLogPage>
   late DateTime _selectedDate;
 
   Map<String, DailyLog> _logs = {};
+  Map<String, DailyLog> _synchronizedLogs = {};
   final TextEditingController _newTaskController = TextEditingController();
   final FocusNode _newTaskFocusNode = FocusNode();
   Timer? _saveTimer;
@@ -39,7 +41,11 @@ class DailyLogPageState extends State<DailyLogPage>
   bool _disposing = false;
   bool _suppressAutosaves = false;
   bool _suppressDisposeSave = false;
+  bool _refreshingExternalChanges = false;
+  bool _refreshExternalChangesAgain = false;
   Completer<void>? _activeSave;
+  StreamSubscription<void>? _externalChangeSubscription;
+  Timer? _externalChangeTimer;
   final Completer<void> _logsLoaded = Completer<void>();
   Object? _loadError;
 
@@ -74,6 +80,9 @@ class DailyLogPageState extends State<DailyLogPage>
     );
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadLogs());
+    if (Platform.isWindows || Platform.isLinux) {
+      unawaited(_watchExternalChanges());
+    }
   }
 
   @override
@@ -81,6 +90,8 @@ class DailyLogPageState extends State<DailyLogPage>
     _disposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
+    _externalChangeTimer?.cancel();
+    unawaited(_externalChangeSubscription?.cancel());
     if (_revision != _savedRevision && !_suppressDisposeSave) {
       unawaited(_saveNow());
     }
@@ -110,6 +121,7 @@ class DailyLogPageState extends State<DailyLogPage>
       final logs = await _store.loadAll();
       if (!mounted) return;
       final normalizedLogs = _addOutstandingTasks(logs);
+      final synchronizedLogs = Map<String, DailyLog>.of(normalizedLogs);
       if (!normalizedLogs.containsKey(_dateKey)) {
         normalizedLogs[_dateKey] = DailyLog(
           dateKey: _dateKey,
@@ -118,6 +130,7 @@ class DailyLogPageState extends State<DailyLogPage>
       }
       setState(() {
         _logs = normalizedLogs;
+        _synchronizedLogs = synchronizedLogs;
         _loading = false;
         _savedRevision = _revision;
       });
@@ -214,10 +227,216 @@ class DailyLogPageState extends State<DailyLogPage>
       _logs[updatedLog.dateKey] = updatedLog;
       _revision++;
     });
+    _scheduleSave();
+  }
+
+  void _scheduleSave() {
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 450), () {
       unawaited(_saveNow());
     });
+  }
+
+  Future<void> _watchExternalChanges() async {
+    try {
+      final changes = await _store.watchChanges();
+      if (!mounted) return;
+      _externalChangeSubscription = changes.listen(
+        (_) {
+          _externalChangeTimer?.cancel();
+          _externalChangeTimer = Timer(const Duration(milliseconds: 200), () {
+            unawaited(_refreshExternalChanges());
+          });
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          _reportExternalChangeError(error, stackTrace);
+        },
+      );
+      unawaited(_refreshExternalChanges());
+    } catch (error, stackTrace) {
+      _reportExternalChangeError(error, stackTrace);
+    }
+  }
+
+  Future<void> _refreshExternalChanges() async {
+    if (_refreshingExternalChanges) {
+      _refreshExternalChangesAgain = true;
+      return;
+    }
+    _refreshingExternalChanges = true;
+    try {
+      await _logsLoaded.future;
+      do {
+        _refreshExternalChangesAgain = false;
+        if (!mounted || _suppressAutosaves) continue;
+        final diskLogs = _addOutstandingTasks(await _store.loadAll());
+        if (!mounted || _suppressAutosaves) continue;
+
+        final mergedLogs = _mergeLogsWithDisk(
+          _logs,
+          _synchronizedLogs,
+          diskLogs,
+        );
+        final changed =
+            _logs.keys.length != mergedLogs.keys.length ||
+            _logs.keys.any(
+              (date) => !identical(_logs[date], mergedLogs[date]),
+            );
+        _synchronizedLogs = diskLogs;
+        if (!changed) continue;
+
+        final hasUnsavedChanges = _revision != _savedRevision || _saving;
+        setState(() => _logs = mergedLogs);
+        if (hasUnsavedChanges) {
+          _revision++;
+          _scheduleSave();
+        }
+      } while (_refreshExternalChangesAgain && mounted);
+    } catch (error, stackTrace) {
+      _reportExternalChangeError(error, stackTrace);
+    } finally {
+      _refreshingExternalChanges = false;
+    }
+  }
+
+  List<DailyTask> _mergeNewTasks(
+    List<DailyTask> currentTasks,
+    List<DailyTask> diskTasks,
+    List<DailyTask> baselineTasks,
+  ) {
+    final currentIds = currentTasks.map((task) => task.id).toSet();
+    final baselineIds = baselineTasks.map((task) => task.id).toSet();
+    final newTasks = diskTasks
+        .where(
+          (task) =>
+              !currentIds.contains(task.id) && !baselineIds.contains(task.id),
+        )
+        .toList();
+    if (newTasks.isEmpty) return currentTasks;
+    return [
+      ...currentTasks.where((task) => !task.isComplete),
+      ...newTasks,
+      ...currentTasks.where((task) => task.isComplete),
+    ];
+  }
+
+  Map<String, DailyLog> _mergeLogsWithDisk(
+    Map<String, DailyLog> currentLogs,
+    Map<String, DailyLog> baselineLogs,
+    Map<String, DailyLog> diskLogs,
+  ) {
+    final mergedLogs = Map<String, DailyLog>.of(currentLogs);
+    final newDates = <String>{};
+    for (final entry in diskLogs.entries) {
+      final current = mergedLogs[entry.key];
+      if (current == null) {
+        mergedLogs[entry.key] = entry.value;
+        newDates.add(entry.key);
+        continue;
+      }
+      final baseline = baselineLogs[entry.key];
+      final disk = entry.value;
+      final updated = current.copyWith(
+        previousOutstandingTasks: _mergeText(
+          current.previousOutstandingTasks,
+          baseline?.previousOutstandingTasks,
+          disk.previousOutstandingTasks,
+        ),
+        emails: _mergeText(current.emails, baseline?.emails, disk.emails),
+        meetings: _mergeText(
+          current.meetings,
+          baseline?.meetings,
+          disk.meetings,
+        ),
+        previousTasks: _mergeNewTasks(
+          current.previousTasks,
+          disk.previousTasks,
+          baseline?.previousTasks ?? const [],
+        ),
+        emailTasks: _mergeNewTasks(
+          current.emailTasks,
+          disk.emailTasks,
+          baseline?.emailTasks ?? const [],
+        ),
+        meetingTasks: _mergeNewTasks(
+          current.meetingTasks,
+          disk.meetingTasks,
+          baseline?.meetingTasks ?? const [],
+        ),
+        tasks: _mergeNewTasks(
+          current.tasks,
+          disk.tasks,
+          baseline?.tasks ?? const [],
+        ),
+      );
+      if (updated.previousOutstandingTasks !=
+              current.previousOutstandingTasks ||
+          updated.emails != current.emails ||
+          updated.meetings != current.meetings ||
+          !identical(updated.previousTasks, current.previousTasks) ||
+          !identical(updated.emailTasks, current.emailTasks) ||
+          !identical(updated.meetingTasks, current.meetingTasks) ||
+          !identical(updated.tasks, current.tasks)) {
+        mergedLogs[entry.key] = updated;
+      }
+    }
+
+    if (newDates.isNotEmpty) {
+      final normalizedLogs = _addOutstandingTasks(mergedLogs);
+      for (final date in newDates) {
+        mergedLogs[date] = normalizedLogs[date]!;
+      }
+    }
+    return mergedLogs;
+  }
+
+  String _mergeText(String current, String? baseline, String disk) {
+    if (baseline == null) return current.isEmpty ? disk : current;
+    return current == baseline ? disk : current;
+  }
+
+  Map<String, DailyLog> _baselineWithSnapshot(
+    Map<String, DailyLog> baseline,
+    Map<String, DailyLog> snapshot,
+  ) {
+    final result = Map<String, DailyLog>.of(baseline);
+    for (final entry in snapshot.entries) {
+      final current = result[entry.key] ?? DailyLog.empty(entry.key);
+      result[entry.key] = current.copyWith(
+        previousTasks: _includeTasks(
+          current.previousTasks,
+          entry.value.previousTasks,
+        ),
+        emailTasks: _includeTasks(current.emailTasks, entry.value.emailTasks),
+        meetingTasks: _includeTasks(
+          current.meetingTasks,
+          entry.value.meetingTasks,
+        ),
+        tasks: _includeTasks(current.tasks, entry.value.tasks),
+      );
+    }
+    return result;
+  }
+
+  List<DailyTask> _includeTasks(
+    List<DailyTask> current,
+    List<DailyTask> additional,
+  ) {
+    final ids = current.map((task) => task.id).toSet();
+    return [...current, ...additional.where((task) => ids.add(task.id))];
+  }
+
+  void _reportExternalChangeError(Object error, StackTrace stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'dayforge external log sync',
+        context: ErrorDescription(
+          'while watching for daily log changes from another process',
+        ),
+      ),
+    );
   }
 
   Future<void> prepareForImport() async {
@@ -417,9 +636,25 @@ class DailyLogPageState extends State<DailyLogPage>
     _activeSave = activeSave;
     final savingRevision = _revision;
     final snapshot = Map<String, DailyLog>.of(_logs);
+    final baseline = Map<String, DailyLog>.of(_synchronizedLogs);
     var succeeded = false;
     try {
-      await _store.saveAll(snapshot);
+      final savedLogs = await _store.updateAll(
+        (diskLogs) => _mergeLogsWithDisk(
+          snapshot,
+          baseline,
+          _addOutstandingTasks(diskLogs),
+        ),
+      );
+      _synchronizedLogs = savedLogs;
+      if (mounted) {
+        final mergedLogs = _mergeLogsWithDisk(
+          _logs,
+          _baselineWithSnapshot(baseline, snapshot),
+          savedLogs,
+        );
+        setState(() => _logs = mergedLogs);
+      }
       _savedRevision = savingRevision;
       succeeded = true;
     } catch (error, stackTrace) {
@@ -1499,13 +1734,6 @@ BoxConstraints _modalConstraints(BuildContext context) {
 }
 
 enum _TaskCollection { previous, emails, meetings }
-
-String dailyLogDateKey(DateTime date) {
-  final year = date.year.toString().padLeft(4, '0');
-  final month = date.month.toString().padLeft(2, '0');
-  final day = date.day.toString().padLeft(2, '0');
-  return '$year-$month-$day';
-}
 
 String _formatDate(DateTime date) {
   const weekdays = [

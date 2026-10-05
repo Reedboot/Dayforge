@@ -6,6 +6,23 @@ Edits save automatically to a local JSON file. No cloud sync is implemented yet.
 
 Use the date arrows or calendar button to switch days. Add notes in the first three sections, then add tasks in the task section. Check a task to strike it through and move it to the bottom; use the arrow action on a task to add an indented subtask. The save status appears in the top bar.
 
+## Command line
+
+On Windows and Linux, run the Dayforge executable with `add` to add an entry
+without opening the window. The type defaults to a general task; use `email` or
+`meeting` to add it to that section. The date defaults to today and can be
+overridden with `--date`:
+
+```sh
+dayforge add --type task "Prepare the weekly report"
+dayforge add --type email "Reply to Sam"
+dayforge add --type meeting --date 2026-10-06 "Project check-in"
+```
+
+Use `dayforge --help` for command usage. The command writes to the same local
+data file as the app, and an open app window updates when CLI entries are
+added.
+
 ## Run
 
 Install Flutter and the platform's required build tools, then from the repository root:
