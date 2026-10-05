@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -39,7 +40,11 @@ class DailyLogPageState extends State<DailyLogPage>
   bool _disposing = false;
   bool _suppressAutosaves = false;
   bool _suppressDisposeSave = false;
+  bool _refreshingExternalChanges = false;
+  bool _refreshExternalChangesAgain = false;
   Completer<void>? _activeSave;
+  StreamSubscription<void>? _externalChangeSubscription;
+  Timer? _externalChangeTimer;
   final Completer<void> _logsLoaded = Completer<void>();
   Object? _loadError;
 
@@ -74,6 +79,9 @@ class DailyLogPageState extends State<DailyLogPage>
     );
     WidgetsBinding.instance.addObserver(this);
     unawaited(_loadLogs());
+    if (Platform.isWindows || Platform.isLinux) {
+      unawaited(_watchExternalChanges());
+    }
   }
 
   @override
@@ -81,6 +89,8 @@ class DailyLogPageState extends State<DailyLogPage>
     _disposing = true;
     WidgetsBinding.instance.removeObserver(this);
     _saveTimer?.cancel();
+    _externalChangeTimer?.cancel();
+    unawaited(_externalChangeSubscription?.cancel());
     if (_revision != _savedRevision && !_suppressDisposeSave) {
       unawaited(_saveNow());
     }
@@ -214,10 +224,125 @@ class DailyLogPageState extends State<DailyLogPage>
       _logs[updatedLog.dateKey] = updatedLog;
       _revision++;
     });
+    _scheduleSave();
+  }
+
+  void _scheduleSave() {
     _saveTimer?.cancel();
     _saveTimer = Timer(const Duration(milliseconds: 450), () {
       unawaited(_saveNow());
     });
+  }
+
+  Future<void> _watchExternalChanges() async {
+    try {
+      final changes = await _store.watchChanges();
+      if (!mounted) return;
+      _externalChangeSubscription = changes.listen(
+        (_) {
+          _externalChangeTimer?.cancel();
+          _externalChangeTimer = Timer(const Duration(milliseconds: 200), () {
+            unawaited(_refreshExternalChanges());
+          });
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          _reportExternalChangeError(error, stackTrace);
+        },
+      );
+    } catch (error, stackTrace) {
+      _reportExternalChangeError(error, stackTrace);
+    }
+  }
+
+  Future<void> _refreshExternalChanges() async {
+    if (_refreshingExternalChanges) {
+      _refreshExternalChangesAgain = true;
+      return;
+    }
+    _refreshingExternalChanges = true;
+    try {
+      await _logsLoaded.future;
+      do {
+        _refreshExternalChangesAgain = false;
+        if (!mounted || _suppressAutosaves) continue;
+        final diskLogs = await _store.loadAll();
+        if (!mounted || _suppressAutosaves) continue;
+
+        final mergedLogs = Map<String, DailyLog>.of(_logs);
+        var changed = false;
+        for (final entry in diskLogs.entries) {
+          final current = mergedLogs[entry.key];
+          if (current == null) {
+            mergedLogs[entry.key] = entry.value;
+            changed = true;
+            continue;
+          }
+          final updated = current.copyWith(
+            previousTasks: _mergeNewTasks(
+              current.previousTasks,
+              entry.value.previousTasks,
+            ),
+            emailTasks: _mergeNewTasks(
+              current.emailTasks,
+              entry.value.emailTasks,
+            ),
+            meetingTasks: _mergeNewTasks(
+              current.meetingTasks,
+              entry.value.meetingTasks,
+            ),
+            tasks: _mergeNewTasks(current.tasks, entry.value.tasks),
+          );
+          if (updated.previousTasks != current.previousTasks ||
+              updated.emailTasks != current.emailTasks ||
+              updated.meetingTasks != current.meetingTasks ||
+              updated.tasks != current.tasks) {
+            mergedLogs[entry.key] = updated;
+            changed = true;
+          }
+        }
+        if (!changed) continue;
+
+        final hasUnsavedChanges = _revision != _savedRevision || _saving;
+        setState(() => _logs = mergedLogs);
+        if (hasUnsavedChanges) {
+          _revision++;
+          _scheduleSave();
+        }
+      } while (_refreshExternalChangesAgain && mounted);
+    } catch (error, stackTrace) {
+      _reportExternalChangeError(error, stackTrace);
+    } finally {
+      _refreshingExternalChanges = false;
+    }
+  }
+
+  List<DailyTask> _mergeNewTasks(
+    List<DailyTask> currentTasks,
+    List<DailyTask> diskTasks,
+  ) {
+    final currentIds = currentTasks.map((task) => task.id).toSet();
+    final newTasks = diskTasks
+        .where((task) => !currentIds.contains(task.id))
+        .toList();
+    if (newTasks.isEmpty) return currentTasks;
+    return [
+      ...currentTasks.where((task) => !task.isComplete),
+      ...newTasks,
+      ...currentTasks.where((task) => task.isComplete),
+    ];
+  }
+
+  void _reportExternalChangeError(Object error, StackTrace stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'dayforge external log sync',
+        context: ErrorDescription(
+          'while watching for daily log changes from another process',
+        ),
+      ),
+    );
   }
 
   Future<void> prepareForImport() async {
@@ -1499,13 +1624,6 @@ BoxConstraints _modalConstraints(BuildContext context) {
 }
 
 enum _TaskCollection { previous, emails, meetings }
-
-String dailyLogDateKey(DateTime date) {
-  final year = date.year.toString().padLeft(4, '0');
-  final month = date.month.toString().padLeft(2, '0');
-  final day = date.day.toString().padLeft(2, '0');
-  return '$year-$month-$day';
-}
 
 String _formatDate(DateTime date) {
   const weekdays = [

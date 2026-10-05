@@ -163,6 +163,36 @@ void main() {
     expect(flakyStore.saveAttempts, greaterThanOrEqualTo(2));
   });
 
+  testWidgets('shows tasks added to storage while the page is open', (
+    tester,
+  ) async {
+    const dateKey = '2026-09-25';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: DailyLogPage(store: store, initialDate: DateTime(2026, 9, 25)),
+      ),
+    );
+    await _pumpUntilLoaded(tester);
+
+    await tester.runAsync(
+      () => store.saveAll({
+        dateKey: const DailyLog(
+          dateKey: dateKey,
+          tasks: [DailyTask(id: 'cli-task', text: 'Added by CLI')],
+        ),
+      }),
+    );
+    for (var attempt = 0; attempt < 20; attempt++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 100)),
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      if (find.text('Added by CLI').evaluate().isNotEmpty) break;
+    }
+
+    expect(find.text('Added by CLI'), findsOneWidget);
+  });
+
   testWidgets('import prevents pending old-page autosaves from overwriting it', (
     tester,
   ) async {

@@ -23,6 +23,20 @@ class DailyLogStore {
     return _decodeLogs(await file.readAsString());
   }
 
+  Future<Stream<void>> watchChanges() async {
+    final file = await _dataFile();
+    await file.parent.create(recursive: true);
+    return file.parent
+        .watch()
+        .where(
+          (event) =>
+              event.path == file.path ||
+              event.path.endsWith('${Platform.pathSeparator}$_fileName') ||
+              event.path.endsWith('${Platform.pathSeparator}$_fileName.tmp'),
+        )
+        .map((_) {});
+  }
+
   Future<void> exportTo(File destination, {Map<String, DailyLog>? logs}) async {
     final snapshot = logs ?? await loadAll();
     await destination.writeAsString(_encodeLogs(snapshot), flush: true);
