@@ -395,6 +395,37 @@ class DailyLogPageState extends State<DailyLogPage>
     return current == baseline ? disk : current;
   }
 
+  Map<String, DailyLog> _baselineWithSnapshot(
+    Map<String, DailyLog> baseline,
+    Map<String, DailyLog> snapshot,
+  ) {
+    final result = Map<String, DailyLog>.of(baseline);
+    for (final entry in snapshot.entries) {
+      final current = result[entry.key] ?? DailyLog.empty(entry.key);
+      result[entry.key] = current.copyWith(
+        previousTasks: _includeTasks(
+          current.previousTasks,
+          entry.value.previousTasks,
+        ),
+        emailTasks: _includeTasks(current.emailTasks, entry.value.emailTasks),
+        meetingTasks: _includeTasks(
+          current.meetingTasks,
+          entry.value.meetingTasks,
+        ),
+        tasks: _includeTasks(current.tasks, entry.value.tasks),
+      );
+    }
+    return result;
+  }
+
+  List<DailyTask> _includeTasks(
+    List<DailyTask> current,
+    List<DailyTask> additional,
+  ) {
+    final ids = current.map((task) => task.id).toSet();
+    return [...current, ...additional.where((task) => ids.add(task.id))];
+  }
+
   void _reportExternalChangeError(Object error, StackTrace stackTrace) {
     FlutterError.reportError(
       FlutterErrorDetails(
@@ -617,7 +648,11 @@ class DailyLogPageState extends State<DailyLogPage>
       );
       _synchronizedLogs = savedLogs;
       if (mounted) {
-        final mergedLogs = _mergeLogsWithDisk(_logs, baseline, savedLogs);
+        final mergedLogs = _mergeLogsWithDisk(
+          _logs,
+          _baselineWithSnapshot(baseline, snapshot),
+          savedLogs,
+        );
         setState(() => _logs = mergedLogs);
       }
       _savedRevision = savingRevision;

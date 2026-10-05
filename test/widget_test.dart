@@ -164,6 +164,56 @@ void main() {
     expect(flakyStore.saveAttempts, greaterThanOrEqualTo(2));
   });
 
+  testWidgets(
+    'deletion during an in-flight save preserves external additions',
+    (tester) async {
+      const dateKey = '2026-09-25';
+      final blockingStore = _BlockingUpdateDailyLogStore(
+        directory: temporaryDirectory,
+        taskToAddBeforeUpdate: const DailyTask(
+          id: 'external-task',
+          text: 'External addition',
+        ),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: DailyLogPage(
+            store: blockingStore,
+            initialDate: DateTime(2026, 9, 25),
+          ),
+        ),
+      );
+      await _pumpUntilLoaded(tester);
+
+      await tester.tap(find.byKey(const ValueKey('add-task-button')));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('task-title-input')),
+        'Delete during save',
+      );
+      await tester.tap(find.text('Add task').last);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.runAsync(() => blockingStore.saveStarted.future);
+
+      await tester.tap(find.byTooltip('Delete task'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete'));
+      await tester.pump();
+      await tester.runAsync(() async => blockingStore.allowSave.complete());
+
+      await _waitForSaved(
+        tester,
+        condition: () async {
+          final tasks =
+              (await blockingStore.loadAll())[dateKey]?.tasks ?? const [];
+          return tasks.length == 1 && tasks.single.id == 'external-task';
+        },
+      );
+      expect(find.text('Delete during save'), findsNothing);
+      expect(find.text('External addition'), findsOneWidget);
+    },
+  );
+
   testWidgets('shows tasks added to storage while the page is open', (
     tester,
   ) async {
@@ -461,6 +511,40 @@ class _FailOnceDailyLogStore extends DailyLogStore {
       throw const FileSystemException('temporary failure');
     }
     return super.updateAll(update);
+  }
+}
+
+class _BlockingUpdateDailyLogStore extends DailyLogStore {
+  _BlockingUpdateDailyLogStore({
+    required super.directory,
+    this.taskToAddBeforeUpdate,
+  });
+
+  final Completer<void> saveStarted = Completer<void>();
+  final Completer<void> allowSave = Completer<void>();
+  DailyTask? taskToAddBeforeUpdate;
+  bool _blockNextSave = true;
+
+  @override
+  Future<Map<String, DailyLog>> updateAll(
+    Map<String, DailyLog> Function(Map<String, DailyLog> logs) update,
+  ) async {
+    final diskLogs = await super.loadAll();
+    final externalTask = taskToAddBeforeUpdate;
+    if (externalTask != null) {
+      taskToAddBeforeUpdate = null;
+      const dateKey = '2026-09-25';
+      final log = diskLogs[dateKey] ?? DailyLog.empty(dateKey);
+      diskLogs[dateKey] = log.copyWith(tasks: [...log.tasks, externalTask]);
+    }
+    final logs = update(diskLogs);
+    if (_blockNextSave) {
+      _blockNextSave = false;
+      saveStarted.complete();
+      await allowSave.future;
+    }
+    await super.saveAll(logs);
+    return logs;
   }
 }
 
