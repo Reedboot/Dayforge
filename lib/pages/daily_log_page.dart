@@ -29,6 +29,7 @@ class DailyLogPageState extends State<DailyLogPage>
   late DateTime _selectedDate;
 
   Map<String, DailyLog> _logs = {};
+  Map<String, DailyLog> _synchronizedLogs = {};
   final TextEditingController _newTaskController = TextEditingController();
   final FocusNode _newTaskFocusNode = FocusNode();
   Timer? _saveTimer;
@@ -120,6 +121,7 @@ class DailyLogPageState extends State<DailyLogPage>
       final logs = await _store.loadAll();
       if (!mounted) return;
       final normalizedLogs = _addOutstandingTasks(logs);
+      final synchronizedLogs = Map<String, DailyLog>.of(normalizedLogs);
       if (!normalizedLogs.containsKey(_dateKey)) {
         normalizedLogs[_dateKey] = DailyLog(
           dateKey: _dateKey,
@@ -128,6 +130,7 @@ class DailyLogPageState extends State<DailyLogPage>
       }
       setState(() {
         _logs = normalizedLogs;
+        _synchronizedLogs = synchronizedLogs;
         _loading = false;
         _savedRevision = _revision;
       });
@@ -249,6 +252,7 @@ class DailyLogPageState extends State<DailyLogPage>
           _reportExternalChangeError(error, stackTrace);
         },
       );
+      unawaited(_refreshExternalChanges());
     } catch (error, stackTrace) {
       _reportExternalChangeError(error, stackTrace);
     }
@@ -265,41 +269,20 @@ class DailyLogPageState extends State<DailyLogPage>
       do {
         _refreshExternalChangesAgain = false;
         if (!mounted || _suppressAutosaves) continue;
-        final diskLogs = await _store.loadAll();
+        final diskLogs = _addOutstandingTasks(await _store.loadAll());
         if (!mounted || _suppressAutosaves) continue;
 
-        final mergedLogs = Map<String, DailyLog>.of(_logs);
-        var changed = false;
-        for (final entry in diskLogs.entries) {
-          final current = mergedLogs[entry.key];
-          if (current == null) {
-            mergedLogs[entry.key] = entry.value;
-            changed = true;
-            continue;
-          }
-          final updated = current.copyWith(
-            previousTasks: _mergeNewTasks(
-              current.previousTasks,
-              entry.value.previousTasks,
-            ),
-            emailTasks: _mergeNewTasks(
-              current.emailTasks,
-              entry.value.emailTasks,
-            ),
-            meetingTasks: _mergeNewTasks(
-              current.meetingTasks,
-              entry.value.meetingTasks,
-            ),
-            tasks: _mergeNewTasks(current.tasks, entry.value.tasks),
-          );
-          if (updated.previousTasks != current.previousTasks ||
-              updated.emailTasks != current.emailTasks ||
-              updated.meetingTasks != current.meetingTasks ||
-              updated.tasks != current.tasks) {
-            mergedLogs[entry.key] = updated;
-            changed = true;
-          }
-        }
+        final mergedLogs = _mergeLogsWithDisk(
+          _logs,
+          _synchronizedLogs,
+          diskLogs,
+        );
+        final changed =
+            _logs.keys.length != mergedLogs.keys.length ||
+            _logs.keys.any(
+              (date) => !identical(_logs[date], mergedLogs[date]),
+            );
+        _synchronizedLogs = diskLogs;
         if (!changed) continue;
 
         final hasUnsavedChanges = _revision != _savedRevision || _saving;
@@ -319,10 +302,15 @@ class DailyLogPageState extends State<DailyLogPage>
   List<DailyTask> _mergeNewTasks(
     List<DailyTask> currentTasks,
     List<DailyTask> diskTasks,
+    List<DailyTask> baselineTasks,
   ) {
     final currentIds = currentTasks.map((task) => task.id).toSet();
+    final baselineIds = baselineTasks.map((task) => task.id).toSet();
     final newTasks = diskTasks
-        .where((task) => !currentIds.contains(task.id))
+        .where(
+          (task) =>
+              !currentIds.contains(task.id) && !baselineIds.contains(task.id),
+        )
         .toList();
     if (newTasks.isEmpty) return currentTasks;
     return [
@@ -330,6 +318,81 @@ class DailyLogPageState extends State<DailyLogPage>
       ...newTasks,
       ...currentTasks.where((task) => task.isComplete),
     ];
+  }
+
+  Map<String, DailyLog> _mergeLogsWithDisk(
+    Map<String, DailyLog> currentLogs,
+    Map<String, DailyLog> baselineLogs,
+    Map<String, DailyLog> diskLogs,
+  ) {
+    final mergedLogs = Map<String, DailyLog>.of(currentLogs);
+    final newDates = <String>{};
+    for (final entry in diskLogs.entries) {
+      final current = mergedLogs[entry.key];
+      if (current == null) {
+        mergedLogs[entry.key] = entry.value;
+        newDates.add(entry.key);
+        continue;
+      }
+      final baseline = baselineLogs[entry.key];
+      final disk = entry.value;
+      final updated = current.copyWith(
+        previousOutstandingTasks: _mergeText(
+          current.previousOutstandingTasks,
+          baseline?.previousOutstandingTasks,
+          disk.previousOutstandingTasks,
+        ),
+        emails: _mergeText(current.emails, baseline?.emails, disk.emails),
+        meetings: _mergeText(
+          current.meetings,
+          baseline?.meetings,
+          disk.meetings,
+        ),
+        previousTasks: _mergeNewTasks(
+          current.previousTasks,
+          disk.previousTasks,
+          baseline?.previousTasks ?? const [],
+        ),
+        emailTasks: _mergeNewTasks(
+          current.emailTasks,
+          disk.emailTasks,
+          baseline?.emailTasks ?? const [],
+        ),
+        meetingTasks: _mergeNewTasks(
+          current.meetingTasks,
+          disk.meetingTasks,
+          baseline?.meetingTasks ?? const [],
+        ),
+        tasks: _mergeNewTasks(
+          current.tasks,
+          disk.tasks,
+          baseline?.tasks ?? const [],
+        ),
+      );
+      if (updated.previousOutstandingTasks !=
+              current.previousOutstandingTasks ||
+          updated.emails != current.emails ||
+          updated.meetings != current.meetings ||
+          !identical(updated.previousTasks, current.previousTasks) ||
+          !identical(updated.emailTasks, current.emailTasks) ||
+          !identical(updated.meetingTasks, current.meetingTasks) ||
+          !identical(updated.tasks, current.tasks)) {
+        mergedLogs[entry.key] = updated;
+      }
+    }
+
+    if (newDates.isNotEmpty) {
+      final normalizedLogs = _addOutstandingTasks(mergedLogs);
+      for (final date in newDates) {
+        mergedLogs[date] = normalizedLogs[date]!;
+      }
+    }
+    return mergedLogs;
+  }
+
+  String _mergeText(String current, String? baseline, String disk) {
+    if (baseline == null) return current.isEmpty ? disk : current;
+    return current == baseline ? disk : current;
   }
 
   void _reportExternalChangeError(Object error, StackTrace stackTrace) {
@@ -542,9 +605,21 @@ class DailyLogPageState extends State<DailyLogPage>
     _activeSave = activeSave;
     final savingRevision = _revision;
     final snapshot = Map<String, DailyLog>.of(_logs);
+    final baseline = Map<String, DailyLog>.of(_synchronizedLogs);
     var succeeded = false;
     try {
-      await _store.saveAll(snapshot);
+      final savedLogs = await _store.updateAll(
+        (diskLogs) => _mergeLogsWithDisk(
+          snapshot,
+          baseline,
+          _addOutstandingTasks(diskLogs),
+        ),
+      );
+      _synchronizedLogs = savedLogs;
+      if (mounted) {
+        final mergedLogs = _mergeLogsWithDisk(_logs, baseline, savedLogs);
+        setState(() => _logs = mergedLogs);
+      }
       _savedRevision = savingRevision;
       succeeded = true;
     } catch (error, stackTrace) {

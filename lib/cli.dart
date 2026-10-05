@@ -77,20 +77,30 @@ Future<int> runDayforgeCli(
   }
 
   final logStore = store ?? DailyLogStore();
-  final logs = await logStore.loadAll();
-  final log = logs[dateKey] ?? DailyLog.empty(dateKey);
-  final task = DailyTask(id: _newTaskId(logs, currentTime), text: text);
-  final updatedLog = switch (type) {
-    'email' => log.copyWith(
-      emailTasks: _addBeforeCompleted(log.emailTasks, task),
-    ),
-    'meeting' => log.copyWith(
-      meetingTasks: _addBeforeCompleted(log.meetingTasks, task),
-    ),
-    _ => log.copyWith(tasks: _addBeforeCompleted(log.tasks, task)),
-  };
-  logs[dateKey] = updatedLog;
-  await logStore.saveAll(logs);
+  await logStore.updateAll((logs) {
+    final log = logs[dateKey] ?? DailyLog.empty(dateKey);
+    final task = DailyTask(id: _newTaskId(logs, currentTime), text: text);
+    logs[dateKey] = switch (type) {
+      'email' => log.copyWith(
+        emailTasks: _addBeforeCompleted(
+          log.emailTasks.isEmpty
+              ? _legacyTasks(log.emails, 'email')
+              : log.emailTasks,
+          task,
+        ),
+      ),
+      'meeting' => log.copyWith(
+        meetingTasks: _addBeforeCompleted(
+          log.meetingTasks.isEmpty
+              ? _legacyTasks(log.meetings, 'meeting')
+              : log.meetingTasks,
+          task,
+        ),
+      ),
+      _ => log.copyWith(tasks: _addBeforeCompleted(log.tasks, task)),
+    };
+    return logs;
+  });
   output('Added $type for $dateKey: $text');
   return 0;
 }
@@ -112,6 +122,15 @@ List<DailyTask> _addBeforeCompleted(List<DailyTask> tasks, DailyTask task) => [
   task,
   ...tasks.where((existing) => existing.isComplete),
 ];
+
+List<DailyTask> _legacyTasks(String value, String prefix) {
+  return value
+      .split('\n')
+      .map((line) => line.trim())
+      .where((line) => line.isNotEmpty)
+      .map((text) => DailyTask(id: '$prefix-${text.hashCode}', text: text))
+      .toList();
+}
 
 String _newTaskId(Map<String, DailyLog> logs, DateTime now) {
   final existingIds = <String>{
